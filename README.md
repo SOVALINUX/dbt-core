@@ -16,6 +16,15 @@
   </a>
 </p>
 
+## Features of this Fork
+
+All features developed in the branch `1.1.latest`  
+
+1. Jinja context `executed_command` - it's now possible to configure macros & hooks behavior in case of unit testing, run_query and other scenarios  
+2. Jinja macroses `include`, `extends`, etc. are now working due to **enabled** FileSystem support for Jinja environment  
+
+## Upstream Readme
+
 **[dbt](https://www.getdbt.com/)** (data build tool) enables data analysts and engineers to transform their data using the same practices that software engineers use to build applications.
 
 dbt is the T in ELT. Organize, cleanse, denormalize, filter, rename, and pre-aggregate the raw data in your warehouse so that it's ready for analysis.
