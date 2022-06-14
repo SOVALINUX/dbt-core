@@ -1,5 +1,7 @@
 import abc
 import os
+import hashlib
+from pathlib import Path
 from typing import (
     Callable,
     Any,
@@ -1346,6 +1348,37 @@ class ProviderContext(ManifestContext):
                 f"submit_python_job is not intended to be called here, at model {parsed_model['alias']}, with macro call_stack {self.context_macro_stack.call_stack}."
             )
         return self.adapter.submit_python_job(parsed_model, compiled_code)
+
+    def get_cache_file_contents(self, file_path: str) -> str:
+        """The `get_cache_file_contents` searches for relative file path against target and reads it's content. File path should not start with '/\.' to prevent potential security breaches
+        Returns the file contents
+        """
+        if file_path.startswith('.') or file_path.startswith('/') or file_path.startswith('\\'):
+            raise CompilationException('Parameter "file_path" at "get_cache_file_contents" method should not start from "/\\." symbols due to security reasons')
+        result = ''
+        file_full_path = os.path.join(self.config.target_path, file_path)
+        if os.path.exists(file_full_path):
+            result = Path(file_full_path).read_text()
+        return result
+
+    @contextmember
+    def save_content_to_cache(self, file_path: str, content: str) -> str:
+        """The `save_content_to_cache` saves cache in a relative file path within target folder. File path should not start with '/\.' to prevent potential security breaches
+        Returns saved file absolute path
+        """
+        if file_path.startswith('.') or file_path.startswith('/') or file_path.startswith('\\'):
+            raise CompilationException('Parameter "file_path" at "save_content_to_cache" method should not start from "/\\." symbols due to security reasons')
+        file_full_path = os.path.join(self.config.target_path, file_path)
+        os.makedirs(os.path.dirname(file_full_path), exist_ok=True)
+        with open(file_full_path, "w") as text_file:
+            text_file.write(content)
+        return file_full_path
+    
+    @contextmember
+    def get_content_hash(self, content: str) -> str:
+        """The `get_content_hash` returns MD5 hex hash for the provided content
+        """
+        return hashlib.md5(content.encode()).hexdigest()
 
 
 class MacroContext(ProviderContext):
