@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dbt.dataclass_schema import dbtClassMixin
 
 from typing import List, Dict, Any, Union
@@ -10,7 +10,7 @@ class SelectorDefinition(dbtClassMixin):
     definition: Union[str, Dict[str, Any]]
     description: str = ""
     default: bool = False
-
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class SelectorFile(dbtClassMixin):
