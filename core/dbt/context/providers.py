@@ -1349,6 +1349,7 @@ class ProviderContext(ManifestContext):
             )
         return self.adapter.submit_python_job(parsed_model, compiled_code)
 
+    @contextmember
     def get_cache_file_contents(self, file_path: str) -> str:
         """The `get_cache_file_contents` searches for relative file path against target and reads it's content. File path should not start with '/\.' to prevent potential security breaches
         Returns the file contents
