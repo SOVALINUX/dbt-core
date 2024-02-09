@@ -1349,7 +1349,7 @@ class ProviderContext(ManifestContext):
             )
         return self.adapter.submit_python_job(parsed_model, compiled_code)
 
-    @contextmember
+    @contextmember()
     def get_cache_file_contents(self, file_path: str) -> str:
         """The `get_cache_file_contents` searches for relative file path against target and reads it's content. File path should not start with '/\.' to prevent potential security breaches
         Returns the file contents
@@ -1362,7 +1362,7 @@ class ProviderContext(ManifestContext):
             result = Path(file_full_path).read_text()
         return result
 
-    @contextmember
+    @contextmember()
     def save_content_to_cache(self, file_path: str, content: str) -> str:
         """The `save_content_to_cache` saves cache in a relative file path within target folder. File path should not start with '/\.' to prevent potential security breaches
         Returns saved file absolute path
@@ -1375,13 +1375,13 @@ class ProviderContext(ManifestContext):
             text_file.write(content)
         return file_full_path
     
-    @contextmember
+    @contextmember()
     def get_content_hash(self, content: str) -> str:
         """The `get_content_hash` returns MD5 hex hash for the provided content
         """
         return hashlib.md5(content.encode()).hexdigest()
 
-    @contextmember
+    @contextmember()
     def ord(self, char: str) -> int:
         """The `ord` returns char code of the symbol
         """
