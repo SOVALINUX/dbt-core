@@ -9,7 +9,7 @@ from .renderer import BaseRenderer
 from dbt.clients.system import (
     load_file_contents,
     path_exists,
-    resolve_path_from_base,
+    resolve_multiple_paths_by_name_expression,
 )
 from dbt.contracts.selection import SelectorFile
 from dbt.exceptions import DbtSelectorsError, DbtRuntimeError
@@ -92,12 +92,14 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
 
 
 def selector_data_from_root(project_root: str) -> Dict[str, Any]:
-    selector_filepath = resolve_path_from_base("selectors.yml", project_root)
-
-    if path_exists(selector_filepath):
-        selectors_dict = load_yaml_text(load_file_contents(selector_filepath))
-    else:
-        selectors_dict = None
+    selectors_files = resolve_multiple_paths_by_name_expression("selectors*.yml", project_root)
+    selectors_dict = {"selectors": []}
+    for selector_filepath in selectors_files:
+        if path_exists(selector_filepath):
+            data = load_yaml_text(load_file_contents(selector_filepath))
+            data_selectors = data.get("selectors", [])
+            selectors_dict["selectors"].extend(data_selectors)
+    selectors_dict = selectors_dict if selectors_dict["selectors"] else None
     return selectors_dict
 
 
