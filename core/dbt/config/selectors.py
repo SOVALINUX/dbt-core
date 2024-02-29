@@ -12,7 +12,7 @@ from dbt.clients.system import (
     resolve_multiple_paths_by_name_expression,
 )
 from dbt.contracts.selection import SelectorFile
-from dbt.exceptions import DbtSelectorsError, DbtRuntimeError
+from dbt.exceptions import DbtSelectorsError, DbtRuntimeError, SelectorsParsingError
 from dbt.graph import parse_from_selectors_definition, SelectionSpec
 from dbt.graph.selector_spec import SelectionCriteria
 
@@ -95,11 +95,18 @@ def selector_data_from_root(project_root: str) -> Dict[str, Any]:
     selectors_files = resolve_multiple_paths_by_name_expression("selectors*.yml", project_root) + \
                       resolve_multiple_paths_by_name_expression("selectors/selectors*.yml", project_root)
     selectors_dict = {"selectors": []}
+    check_selectors_names = []
     for selector_filepath in selectors_files:
         if path_exists(selector_filepath):
             data = load_yaml_text(load_file_contents(selector_filepath))
             data_selectors = data.get("selectors", [])
+            for data_selector in data_selectors:
+                if data_selector["name"] in check_selectors_names:
+                    raise SelectorsParsingError(
+                        f"There is several selectors with name {data_selector['name']} were found. Please fix it."
+                    )
             selectors_dict["selectors"].extend(data_selectors)
+            check_selectors_names.extend([data_selector.get("name", "") for data_selector in data_selectors])
     selectors_dict = selectors_dict if selectors_dict["selectors"] else None
     return selectors_dict
 
