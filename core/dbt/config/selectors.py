@@ -92,8 +92,7 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
 
 
 def selector_data_from_root(project_root: str) -> Dict[str, Any]:
-    selectors_files = resolve_multiple_paths_by_name_expression("selectors*.yml", project_root) + \
-                      resolve_multiple_paths_by_name_expression("selectors/selectors*.yml", project_root)
+    selectors_files = resolve_multiple_paths_by_name_expression("selectors/selectors*.yml", project_root)
     selectors_dict = {"selectors": []}
     check_selectors_names = []
     for selector_filepath in selectors_files:
