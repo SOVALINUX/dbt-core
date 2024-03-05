@@ -13,7 +13,7 @@ All features developed in the branch `1.1.latest`
 
 1. Jinja context `executed_command` - it's now possible to configure macros & hooks behavior in case of unit testing, run_query and other scenarios  
 2. Jinja macroses `include`, `extends`, etc. are now working due to **enabled** FileSystem support for Jinja environment  
-3. Multiple selectors support. Selectors can be located in any file with name like `selectors<ANY_SUFFIX>.yml` in the project root or `selectors` folder (developed in the branch `1.7.latest`)
+3. Multiple selectors support. Selectors can be located in any file with name like `selectors<ANY_SUFFIX>.yml` in the `selectors` folder (developed in the branch `1.7.latest`)
 
 ## Upstream Readme
 
