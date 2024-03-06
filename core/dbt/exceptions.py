@@ -1336,6 +1336,12 @@ class TestTypeError(ParsingError):
         return msg
 
 
+class SelectorsParsingError(ParsingError):
+    def __init__(self, msg) -> None:
+        self.msg = msg
+        super().__init__(msg=self.msg)
+
+
 # This is triggered across multiple files
 class EnvVarMissingError(ParsingError):
     def __init__(self, var: str):

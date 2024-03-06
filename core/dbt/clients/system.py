@@ -1,6 +1,7 @@
 import errno
 import fnmatch
 import functools
+import glob
 import json
 import os
 import os.path
@@ -218,6 +219,14 @@ def resolve_path_from_base(path_to_resolve: str, base_path: str) -> str:
     resolve it to an absolute path and return.
     """
     return os.path.abspath(os.path.join(base_path, os.path.expanduser(path_to_resolve)))
+
+
+def resolve_multiple_paths_by_name_expression(name_expression: str, base_path: str):
+    paths = []
+    files = glob.glob(f"{base_path}/{name_expression}")
+    for file in files:
+        paths.append(os.path.abspath(os.path.join(base_path, os.path.expanduser(file))))
+    return paths
 
 
 def rmdir(path: str) -> None:
