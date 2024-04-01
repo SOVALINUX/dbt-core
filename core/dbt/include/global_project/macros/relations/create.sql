@@ -7,6 +7,9 @@
 {%- macro default__get_create_sql(relation, sql) -%}
 
     {%- if relation.is_view -%}
+        {%- if '."offer_event"' in ('relation: ' ~ relation) -%}  
+          {{- exceptions.raise_compiler_error("Attempt to create 'offer_event' model that should be table as a view. It's a custom validation of this DBT fork, where we're trying to pin point the DBT problem. Please archive target and logs folders and send it to the Siarhei Nekhviadovich : " ~ relation ~ ": " ~ relation.type ) -}}
+        {%- endif -%}
         {{ get_create_view_as_sql(relation, sql) }}
 
     {%- elif relation.is_table -%}
