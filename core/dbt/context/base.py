@@ -4,6 +4,7 @@ import json
 import os
 from typing import Any, Callable, Dict, NoReturn, Optional, Mapping, Iterable, Set, List
 import threading
+from datetime import date, datetime
 
 from dbt.flags import get_flags
 import dbt.flags as flags_module
@@ -174,6 +175,13 @@ class Var:
             return default
         else:
             return self.get_missing_var(var_name)
+
+
+class ExtendedDbtJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 class BaseContext(metaclass=ContextMeta):
@@ -400,7 +408,7 @@ class BaseContext(metaclass=ContextMeta):
             {% do log(my_json_string) %}
         """
         try:
-            return json.dumps(value, sort_keys=sort_keys)
+            return json.dumps(value, sort_keys=sort_keys, cls=ExtendedDbtJSONEncoder)
         except ValueError:
             return default
 
