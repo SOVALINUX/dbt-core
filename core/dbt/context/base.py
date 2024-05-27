@@ -4,7 +4,6 @@ import json
 import os
 from typing import Any, Callable, Dict, NoReturn, Optional, Mapping, Iterable, Set, List
 import threading
-from datetime import date, datetime
 
 from dbt.flags import get_flags
 import dbt.flags as flags_module
@@ -179,7 +178,7 @@ class Var:
 
 class ExtendedDbtJSONEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, (datetime, date)):
+        if isinstance(obj, (datetime.datetime, datetime.date)):
             return obj.isoformat()
         return super().default(obj)
 
