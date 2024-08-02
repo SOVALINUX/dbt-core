@@ -1847,6 +1847,12 @@ class ProviderContext(ManifestContext):
         """
         return hashlib.md5(content.encode()).hexdigest()
 
+    @contextmember()
+    def ord(self, char: str) -> int:
+        """The `ord` returns char code of the symbol
+        """
+        return ord(char)
+
 
 class MacroContext(ProviderContext):
     """Internally, macros can be executed like nodes, with some restrictions:
