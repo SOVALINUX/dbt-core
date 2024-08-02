@@ -1,16 +1,16 @@
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from dbt.clients.yaml_helper import Dumper, Loader, load_yaml_text, yaml  # noqa: F401
 from dbt.contracts.selection import SelectorFile
-from dbt.exceptions import DbtSelectorsError
+from dbt.exceptions import DbtSelectorsError, SelectorsParsingError
 from dbt.graph import SelectionSpec, parse_from_selectors_definition
 from dbt.graph.selector_spec import SelectionCriteria
 from dbt_common.clients.system import (
     load_file_contents,
     path_exists,
-    resolve_path_from_base,
+    resolve_multiple_paths_by_name_expression,
 )
 from dbt_common.dataclass_schema import ValidationError
 from dbt_common.exceptions import DbtRuntimeError
@@ -95,12 +95,25 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
 
 
 def selector_data_from_root(project_root: str) -> Optional[Dict[str, Any]]:
-    selector_filepath = resolve_path_from_base("selectors.yml", project_root)
-
-    if path_exists(selector_filepath):
-        selectors_dict = load_yaml_text(load_file_contents(selector_filepath))
-    else:
-        selectors_dict = None
+    selectors_files = resolve_multiple_paths_by_name_expression(
+        "selectors/selectors*.yml", project_root
+    )
+    selectors_list: List[Any] = []
+    check_selectors_names: List[str] = []
+    for selector_filepath in selectors_files:
+        if path_exists(selector_filepath):
+            data = load_yaml_text(load_file_contents(selector_filepath))
+            data_selectors = data.get("selectors", [])
+            for data_selector in data_selectors:
+                if data_selector["name"] in check_selectors_names:
+                    raise SelectorsParsingError(
+                        f"There is several selectors with name {data_selector['name']} were found. Please fix it."
+                    )
+            selectors_list.extend(data_selectors)
+            check_selectors_names.extend(
+                [data_selector.get("name", "") for data_selector in data_selectors]
+            )
+    selectors_dict: Optional[Dict[str, Any]] = {"selectors": selectors_list} if selectors_list else None
     return selectors_dict
 
 
