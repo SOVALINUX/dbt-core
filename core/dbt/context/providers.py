@@ -1819,7 +1819,7 @@ class ProviderContext(ManifestContext):
         Returns the file contents
         """
         if file_path.startswith('.') or file_path.startswith('/') or file_path.startswith('\\'):
-            raise CompilationException(
+            raise CompilationError(
                 'Parameter "file_path" at "get_cache_file_contents" method should not start from "/\\." symbols due to security reasons')
         result = ''
         file_full_path = os.path.join(self.config.target_path, file_path)
@@ -1833,7 +1833,7 @@ class ProviderContext(ManifestContext):
         Returns saved file absolute path
         """
         if file_path.startswith('.') or file_path.startswith('/') or file_path.startswith('\\'):
-            raise CompilationException(
+            raise CompilationError(
                 'Parameter "file_path" at "save_content_to_cache" method should not start from "/\\." symbols due to security reasons')
         file_full_path = os.path.join(self.config.target_path, file_path)
         os.makedirs(os.path.dirname(file_full_path), exist_ok=True)
