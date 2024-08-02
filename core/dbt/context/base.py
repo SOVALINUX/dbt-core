@@ -215,6 +215,13 @@ def _get_env_var(env: Mapping[str, str], var: str) -> tuple[Optional[str], bool]
     return None, False
 
 
+class ExtendedDbtJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (datetime.datetime, datetime.date)):
+            return obj.isoformat()
+        return super().default(obj)
+
+
 class BaseContext(metaclass=ContextMeta):
     # Set by ContextMeta
     _context_members_: Dict[str, Any]
@@ -441,7 +448,7 @@ class BaseContext(metaclass=ContextMeta):
             {% do log(my_json_string) %}
         """
         try:
-            return json.dumps(value, sort_keys=sort_keys)
+            return json.dumps(value, sort_keys=sort_keys, cls=ExtendedDbtJSONEncoder)
         except ValueError:
             return default
 
