@@ -55,7 +55,7 @@ dependencies = [
     "dbt-extractor>=0.5.0,<=0.6",
     "metricflow>=0.213.0,<1.0",
     # Minor versions for these are expected to be backwards-compatible
-    "dbt-common>=1.37.5,<2.0",
+    "dbt-common @ git+https://github.com/SOVALINUX/dbt-common.git@EPMPLXD-9509_dbt_1.12.5",
     "dbt-adapters>=1.24.5,<2.0",
     "dbt-protos>=1.0.514,<2.0",
     "dbt-core-experimental-parser>=2.0.0b1,<3",
