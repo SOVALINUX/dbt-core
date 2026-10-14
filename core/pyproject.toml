@@ -83,6 +83,8 @@ dbt = "dbt.cli.main:cli"
 [tool.hatch.version]
 path = "dbt/__version__.py"
 
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [build-system]
 requires = ["hatchling"]
