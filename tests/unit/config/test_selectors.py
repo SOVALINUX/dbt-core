@@ -1,16 +1,86 @@
 import textwrap
 import unittest
 
+import pytest
 import yaml
 
 import dbt.exceptions
-from dbt.config.selectors import SelectorConfig, SelectorDict, selector_config_from_data
+from dbt.config.selectors import (
+    SelectorConfig,
+    SelectorDict,
+    selector_config_from_data,
+    selector_data_from_root,
+)
+from dbt.contracts.selection import SelectorFile
 
 
 def get_selector_dict(txt: str) -> dict:
     txt = textwrap.dedent(txt)
     dct = yaml.safe_load(txt)
     return dct
+
+
+class TestSelectorMeta:
+    def test_meta_is_parsed(self):
+        dct = get_selector_dict(
+            """\
+            selectors:
+              - name: with_meta
+                meta:
+                  owner: analytics
+                definition: tag:nightly
+            """
+        )
+        assert SelectorFile.from_dict(dct).selectors[0].meta == {"owner": "analytics"}
+        assert isinstance(selector_config_from_data(dct), SelectorConfig)
+
+    def test_meta_defaults_to_empty_dict(self):
+        dct = get_selector_dict(
+            """\
+            selectors:
+              - name: without_meta
+                definition: tag:nightly
+            """
+        )
+        assert SelectorFile.from_dict(dct).selectors[0].meta == {}
+
+
+class TestSelectorDataFromRoot:
+    """Selectors are read from every `selectors/selectors*.yml` file of the project."""
+
+    @staticmethod
+    def _write_selectors(root, file_name: str, *selector_names: str) -> None:
+        selectors_dir = root / "selectors"
+        selectors_dir.mkdir(exist_ok=True)
+        lines = ["selectors:"]
+        for name in selector_names:
+            lines += [f"  - name: {name}", f"    definition: tag:{name}"]
+        (selectors_dir / file_name).write_text("\n".join(lines) + "\n")
+
+    def test_no_selector_files_returns_none(self, tmp_path):
+        assert selector_data_from_root(str(tmp_path)) is None
+
+    def test_selectors_from_multiple_files_are_merged(self, tmp_path):
+        self._write_selectors(tmp_path, "selectors_a.yml", "alpha")
+        self._write_selectors(tmp_path, "selectors_b.yml", "beta", "gamma")
+
+        data = selector_data_from_root(str(tmp_path))
+
+        assert sorted(s["name"] for s in data["selectors"]) == ["alpha", "beta", "gamma"]
+
+    def test_duplicate_selector_names_across_files_raise(self, tmp_path):
+        self._write_selectors(tmp_path, "selectors_a.yml", "alpha")
+        self._write_selectors(tmp_path, "selectors_b.yml", "alpha")
+
+        with pytest.raises(dbt.exceptions.SelectorsParsingError, match="alpha"):
+            selector_data_from_root(str(tmp_path))
+
+    def test_root_level_selectors_yml_is_not_read(self, tmp_path):
+        (tmp_path / "selectors.yml").write_text(
+            "selectors:\n  - name: legacy\n    definition: tag:legacy\n"
+        )
+
+        assert selector_data_from_root(str(tmp_path)) is None
 
 
 class SelectorUnitTest(unittest.TestCase):

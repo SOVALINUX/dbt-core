@@ -1,3 +1,5 @@
+import datetime
+import json
 import os
 
 from jinja2.runtime import Undefined
@@ -53,6 +55,19 @@ class TestBaseContext:
         flags = BaseContext(cli_vars={}).flags
         for expected_flag in expected_context_flags:
             assert hasattr(flags, expected_flag.upper())
+
+
+class TestToJson:
+    def test_tojson_serializes_datetime_and_date(self):
+        value = {
+            "ts": datetime.datetime(2024, 8, 2, 16, 31, 29),
+            "day": datetime.date(2024, 8, 2),
+        }
+        result = BaseContext.tojson(value, sort_keys=True)
+        assert json.loads(result) == {"day": "2024-08-02", "ts": "2024-08-02T16:31:29"}
+
+    def test_tojson_still_serializes_plain_values(self):
+        assert BaseContext.tojson({"b": 1, "a": [1, 2]}, sort_keys=True) == '{"a": [1, 2], "b": 1}'
 
 
 class TestOtelIds:

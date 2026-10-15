@@ -1,0 +1,6 @@
+kind: Features
+body: Allow `meta` information in dbt selector definitions
+time: 2026-10-15T12:00:02.000000+00:00
+custom:
+    Author: krisstinkou
+    Issue: meta-information-in-selector-definitions

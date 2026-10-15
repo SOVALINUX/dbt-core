@@ -1,5 +1,7 @@
+import os
 from argparse import Namespace
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Optional, Type, Union
 from unittest import mock
 
@@ -12,11 +14,13 @@ from dbt.artifacts.resources.types import BatchSize
 from dbt.context.providers import (
     BaseResolver,
     EventTimeFilter,
+    ProviderContext,
     RuntimeRefResolver,
     RuntimeSourceResolver,
 )
 from dbt.contracts.graph.nodes import BatchContext, ModelNode, SnapshotNode
 from dbt.event_time.sample_window import SampleWindow
+from dbt.exceptions import CompilationError
 from dbt.flags import set_from_args
 
 
@@ -497,3 +501,42 @@ class TestRuntimeSourceResolver:
         # create limited relation
         relation = resolver.resolve("test", "test")
         assert relation.limit == expected_limit
+
+
+class TestFileSystemCacheContextMembers:
+    """The file system cache and `ord` helpers that are exposed to Jinja.
+
+    The context members are plain functions on the class, so they are called with a
+    minimal stand-in for `self` that only provides `config.target_path`.
+    """
+
+    @pytest.fixture
+    def ctx(self, tmp_path):
+        return SimpleNamespace(config=SimpleNamespace(target_path=str(tmp_path)))
+
+    def test_get_content_hash_is_md5_hex(self, ctx):
+        assert (
+            ProviderContext.get_content_hash(ctx, "abc") == "900150983cd24fb0d6963f7d28e17f72"
+        )
+
+    def test_save_and_read_cache_file(self, ctx, tmp_path):
+        cache_path = "unit_testing/cache/abc.sql"
+
+        saved_path = ProviderContext.save_content_to_cache(ctx, cache_path, "select 1")
+
+        assert saved_path == os.path.join(str(tmp_path), cache_path)
+        assert ProviderContext.get_cache_file_contents(ctx, cache_path) == "select 1"
+
+    def test_get_cache_file_contents_missing_file_returns_empty_string(self, ctx):
+        assert ProviderContext.get_cache_file_contents(ctx, "unit_testing/cache/nope.sql") == ""
+
+    @pytest.mark.parametrize("bad_path", ["../outside.sql", "/etc/passwd", "\\windows\\x.sql"])
+    def test_cache_functions_reject_paths_that_leave_target(self, ctx, bad_path):
+        with pytest.raises(CompilationError):
+            ProviderContext.get_cache_file_contents(ctx, bad_path)
+        with pytest.raises(CompilationError):
+            ProviderContext.save_content_to_cache(ctx, bad_path, "select 1")
+
+    def test_ord_returns_char_code(self, ctx):
+        assert ProviderContext.ord(ctx, "A") == 65
+        assert ProviderContext.ord(ctx, " ") == 32
