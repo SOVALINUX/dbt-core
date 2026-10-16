@@ -249,6 +249,10 @@ REQUIRED_MACRO_KEYS = REQUIRED_QUERY_HEADER_KEYS | {
     "selected_resources",
     "invocation_args_dict",
     "submit_python_job",
+    "get_cache_file_contents",
+    "save_content_to_cache",
+    "get_content_hash",
+    "ord",
     "dbt_metadata_envs",
     "function",
 }
