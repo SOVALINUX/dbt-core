@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Any, Dict
 
 from dbt.config.renderer import BaseRenderer, Keypath
 
@@ -11,6 +11,7 @@ from dbt.config.renderer import BaseRenderer, Keypath
 # keyword args are rendered to capture refs in render_test_update.
 # Keyword args are finally rendered at compilation time.
 # Descriptions are not rendered until 'process_docs'.
+# Pre- and post-hooks in configs are late-rendered.
 class SchemaYamlRenderer(BaseRenderer):
     def __init__(self, context: Dict[str, Any], key: str) -> None:
         super().__init__(context)
@@ -25,25 +26,81 @@ class SchemaYamlRenderer(BaseRenderer):
         models:
             - name: blah
               description: blah
-              tests: ...
+              data_tests: ...
               columns:
                 - name:
                   description: blah
-                  tests: ...
+                  data_tests: ...
 
-        Return True if it's tests or description - those aren't rendered now
+        Return True if it's tests, data_tests or description - those aren't rendered now
         because they're rendered later in parse_generic_tests or process_docs.
+        "tests" and "data_tests" are both currently supported but "tests" has been deprecated
         """
-        if len(keypath) >= 1 and keypath[0] in ("tests", "description"):
+        # top level descriptions and data_tests
+        if len(keypath) >= 1 and keypath[0] in (
+            "tests",
+            "data_tests",
+            "description",
+            "loaded_at_query",
+        ):
             return True
 
-        if len(keypath) == 2 and keypath[1] in ("tests", "description"):
+        # columns descriptions and data_tests
+        if len(keypath) == 2 and keypath[1] in (
+            "tests",
+            "data_tests",
+            "description",
+            "loaded_at_query",
+        ):
+            return True
+
+        # config: pre- and post-hooks, and loaded_at_query
+        if (
+            len(keypath) >= 2
+            and keypath[0] == "config"
+            and keypath[1] in ("pre_hook", "post_hook", "loaded_at_query")
+        ):
+            return True
+
+        if len(keypath) == 5 and keypath[4] == "description":
+            return True
+
+        # versions: tests/data_tests, descriptions, and column tests/data_tests/descriptions
+        # keypath looks like ("versions", <idx>, "tests" or "data_tests", ...) or
+        # ("versions", <idx>, "columns", <idx>, "tests" or "data_tests", ...)
+        if (
+            len(keypath) >= 3
+            and keypath[0] == "versions"
+            and keypath[2]
+            in (
+                "tests",
+                "data_tests",
+                "description",
+            )
+        ):
+            return True
+
+        if (
+            len(keypath) >= 5
+            and keypath[0] == "versions"
+            and keypath[2] == "columns"
+            and keypath[4] in ("tests", "data_tests", "description")
+        ):
             return True
 
         if (
             len(keypath) >= 3
-            and keypath[0] == "columns"
-            and keypath[2] in ("tests", "description")
+            and keypath[0] in ("columns", "dimensions", "measures", "entities", "metrics")
+            and keypath[2] in ("tests", "data_tests", "description")
+        ):
+            return True
+
+        # derived_semantics descriptions (v2 semantic layer)
+        if (
+            len(keypath) >= 4
+            and keypath[0] == "derived_semantics"
+            and keypath[1] in ("dimensions", "entities")
+            and keypath[3] in ("tests", "data_tests", "description")
         ):
             return True
 
@@ -53,9 +110,10 @@ class SchemaYamlRenderer(BaseRenderer):
     def should_render_keypath(self, keypath: Keypath) -> bool:
         if len(keypath) < 1:
             return True
-
         if self.key == "sources":
-            if keypath[0] == "description":
+            if keypath[0] in ("description", "loaded_at_query"):
+                return False
+            if len(keypath) >= 2 and keypath[0] == "config" and keypath[1] == "loaded_at_query":
                 return False
             if keypath[0] == "tables":
                 if self._is_norender_key(keypath[2:]):
@@ -67,11 +125,26 @@ class SchemaYamlRenderer(BaseRenderer):
             elif self._is_norender_key(keypath[0:]):
                 return False
         elif self.key == "metrics":
-            if keypath[0] == "sql":
+            # This ensures that metric filters are skipped
+            if keypath[-1] == "filter" or len(keypath) > 1 and keypath[-2] == "filter":
+                return False
+            elif self._is_norender_key(keypath[0:]):
+                return False
+        elif self.key == "saved_queries":
+            # This ensures that saved query filters are skipped
+            if keypath[0] == "query_params" and len(keypath) > 1 and keypath[1] == "where":
                 return False
             elif self._is_norender_key(keypath[0:]):
                 return False
         else:  # models, seeds, snapshots, analyses
+            # Skip metric filters — consistent with the "metrics" branch above,
+            # using positional checks to avoid over-matching.
+            # metrics is always at keypath[0] in this branch (model-relative path),
+            # and filter is always at [-1] (string) or [-2] (list item).
+            if keypath[0] == "metrics" and (
+                keypath[-1] == "filter" or (len(keypath) > 1 and keypath[-2] == "filter")
+            ):
+                return False
             if self._is_norender_key(keypath[0:]):
                 return False
         return True

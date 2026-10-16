@@ -1,8 +1,8 @@
 import pytest
-from dbt.tests.util import run_dbt, get_manifest
-from dbt.exceptions import RuntimeException
-from dbt.context.providers import generate_runtime_model_context
 
+from dbt.context.providers import generate_runtime_model_context
+from dbt.exceptions import DbtRuntimeError
+from dbt.tests.util import get_manifest, run_dbt
 
 my_model_sql = """
   select 1 as fun
@@ -42,11 +42,12 @@ def test_basic(project):
     assert macro_func
     assert type(macro_func).__name__ == "MacroGenerator"
 
-    # These two incremental strategies are not valid for Postgres
-    with pytest.raises(RuntimeException) as excinfo:
-        macro_func = project.adapter.get_incremental_strategy_macro(context, "merge")
-    assert "merge" in str(excinfo.value)
+    # This incremental strategy only works for Postgres >= 15
+    macro_func = project.adapter.get_incremental_strategy_macro(context, "merge")
+    assert macro_func
+    assert type(macro_func).__name__ == "MacroGenerator"
 
-    with pytest.raises(RuntimeException) as excinfo:
+    # This incremental strategy is not valid for Postgres
+    with pytest.raises(DbtRuntimeError) as excinfo:
         macro_func = project.adapter.get_incremental_strategy_macro(context, "insert_overwrite")
     assert "insert_overwrite" in str(excinfo.value)

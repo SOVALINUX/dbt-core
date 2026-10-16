@@ -1,14 +1,11 @@
 import os
-import pytest
 import tempfile
-
 from pathlib import Path
 
-from dbt.tests.util import (
-    check_relations_equal,
-    run_dbt,
-)
+import pytest
 
+from dbt.exceptions import DbtProjectError
+from dbt.tests.util import check_relations_equal, run_dbt, write_config_file
 
 models__disabled_one = """
 {{config(enabled=False)}}
@@ -105,6 +102,39 @@ class TestSimpleDependency(SimpleDependencyBase):
         check_relations_equal(project.adapter, ["seed", "incremental"])
 
 
+class TestSimpleDependencyWithDependenciesFile(SimpleDependencyBase):
+    @pytest.fixture(scope="class")
+    def packages(self):
+        return {}
+
+    @pytest.fixture(scope="class")
+    def dependencies(self):
+        return {
+            "packages": [
+                {
+                    "git": "https://github.com/dbt-labs/dbt-integration-project",
+                    "warn-unpinned": True,
+                }
+            ]
+        }
+
+    def test_dependency_with_dependencies_file(self, run_deps, project):
+        # Tests that "packages" defined in a dependencies.yml file works
+        run_dbt(["deps"])
+        results = run_dbt()
+        assert len(results) == 4
+
+
+class TestSimpleDependencyWithEmptyPackagesFile(SimpleDependencyBase):
+    @pytest.fixture(scope="class")
+    def packages(self):
+        return " "
+
+    def test_dependency_with_empty_packages_file(self, run_deps, project):
+        # Tests that an empty packages file doesn't fail with a Python error
+        run_dbt(["deps"])
+
+
 class TestSimpleDependencyNoProfile(SimpleDependencyBase):
     """dbt deps and clean commands should not require a profile."""
 
@@ -183,6 +213,45 @@ class TestSimpleDependencyWithDuplicates(object):
         run_dbt(["deps"])
 
 
+class TestSimpleDependencyWithSubdirs(object):
+    # dbt should convert these into a single dependency internally
+    @pytest.fixture(scope="class")
+    def packages(self):
+        return {
+            "packages": [
+                {
+                    "git": "https://github.com/dbt-labs/dbt-multipe-packages.git",
+                    "subdirectory": "dbt-utils-main",
+                    "revision": "v0.1.0",
+                },
+                {
+                    "git": "https://github.com/dbt-labs/dbt-multipe-packages.git",
+                    "subdirectory": "dbt-date-main",
+                    "revision": "v0.1.0",
+                },
+            ]
+        }
+
+    def test_git_with_multiple_subdir(self, project):
+        run_dbt(["deps"])
+        assert os.path.exists("package-lock.yml")
+        expected = """packages:
+  - git: https://github.com/dbt-labs/dbt-multipe-packages.git
+    name: dbt_utils
+    revision: 53782f3ede8fdf307ee1d8e418aa65733a4b72fa
+    subdirectory: dbt-utils-main
+  - git: https://github.com/dbt-labs/dbt-multipe-packages.git
+    name: dbt_date
+    revision: 53782f3ede8fdf307ee1d8e418aa65733a4b72fa
+    subdirectory: dbt-date-main
+sha1_hash: b9c8042f29446c55a33f9f211737f445a640c7a1
+"""
+        with open("package-lock.yml") as fp:
+            contents = fp.read()
+        assert contents == expected
+        assert len(os.listdir("dbt_packages")) == 2
+
+
 class TestRekeyedDependencyWithSubduplicates(object):
     # this revision of dbt-integration-project requires dbt-utils.git@0.5.0, which the
     # package config handling should detect
@@ -204,6 +273,25 @@ class TestRekeyedDependencyWithSubduplicates(object):
     def test_simple_dependency_deps(self, project):
         run_dbt(["deps"])
         assert len(os.listdir("dbt_packages")) == 2
+
+
+class TestTarballNestedDependencies(object):
+    # this version of dbt_expectations has a dependency on dbt_date, which the
+    # package config handling should detect
+    @pytest.fixture(scope="class")
+    def packages(self):
+        return {
+            "packages": [
+                {
+                    "tarball": "https://github.com/calogica/dbt-expectations/archive/refs/tags/0.9.0.tar.gz",
+                    "name": "dbt_expectations",
+                },
+            ]
+        }
+
+    def test_simple_dependency_deps(self, project):
+        run_dbt(["deps"])
+        assert set(os.listdir("dbt_packages")) == set(["dbt_expectations", "dbt_date"])
 
 
 class DependencyBranchBase(object):
@@ -304,3 +392,83 @@ class TestSimpleDependencyBadProfile(object):
         del os.environ["PROFILE_TEST_HOST"]
         run_dbt(["deps"])
         run_dbt(["clean"])
+
+
+class TestSimpleDependcyTarball(object):
+    @pytest.fixture(scope="class")
+    def packages(self):
+        return {
+            "packages": [
+                {
+                    "tarball": "https://codeload.github.com/dbt-labs/dbt-utils/tar.gz/0.9.6",
+                    "name": "dbt_utils",
+                }
+            ]
+        }
+
+    def test_deps_simple_tarball_doesnt_error_out(self, project):
+        run_dbt(["deps"])
+        assert len(os.listdir("dbt_packages")) == 1
+
+
+class TestBadTarballDependency(object):
+    def test_malformed_tarball_package_causes_exception(self, project):
+        # We have to specify the bad formatted package here because if we do it
+        # in a `packages` fixture, the test will blow up in the setup phase, meaning
+        # we can't appropriately catch it with a `pytest.raises`
+        bad_tarball_package_spec = {
+            "packages": [
+                {
+                    "tarball": "https://codeload.github.com/dbt-labs/dbt-utils/tar.gz/0.9.6",
+                    "version": "dbt_utils",
+                }
+            ]
+        }
+        write_config_file(bad_tarball_package_spec, "packages.yml")
+
+        with pytest.raises(
+            DbtProjectError, match=r"The packages.yml file in this project is malformed"
+        ) as e:
+            run_dbt(["deps"])
+            assert e is not None
+
+
+class TestEmptyDependency:
+    def test_empty_package(self, project):
+        # We have to specify the bad formatted package here because if we do it
+        # in a `packages` fixture, the test will blow up in the setup phase, meaning
+        # we can't appropriately catch it with a `pytest.raises`
+        empty_hub_package = {
+            "packages": [
+                {
+                    "package": "",
+                    "version": "1.0.0",
+                }
+            ]
+        }
+        write_config_file(empty_hub_package, "packages.yml")
+        with pytest.raises(DbtProjectError, match="A hub package is missing the value"):
+            run_dbt(["deps"])
+
+        empty_git_package = {
+            "packages": [
+                {
+                    "git": "",
+                    "revision": "1.0.0",
+                }
+            ]
+        }
+        write_config_file(empty_git_package, "packages.yml")
+        with pytest.raises(DbtProjectError, match="A git package is missing the value"):
+            run_dbt(["deps"])
+
+        empty_local_package = {
+            "packages": [
+                {
+                    "local": "",
+                }
+            ]
+        }
+        write_config_file(empty_local_package, "packages.yml")
+        with pytest.raises(DbtProjectError, match="A local package is missing the value"):
+            run_dbt(["deps"])

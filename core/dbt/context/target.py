@@ -1,17 +1,17 @@
 from typing import Any, Dict
 
-from dbt.contracts.connection import HasCredentials
-
 from dbt.context.base import BaseContext, contextproperty
 
 
 class TargetContext(BaseContext):
     # subclass is ConfiguredContext
-    def __init__(self, config: HasCredentials, cli_vars: Dict[str, Any]):
-        super().__init__(cli_vars=cli_vars)
-        self.config = config
+    def __init__(
+        self, target_dict: Dict[str, Any], cli_vars: Dict[str, Any], require_vars: bool = True
+    ):
+        super().__init__(cli_vars=cli_vars, require_vars=require_vars)
+        self.target_dict = target_dict
 
-    @contextproperty
+    @contextproperty()
     def target(self) -> Dict[str, Any]:
         """`target` contains information about your connection to the warehouse
         (specified in profiles.yml). Some configs are shared between all
@@ -73,9 +73,4 @@ class TargetContext(BaseContext):
             |----------|-----------|------------------------------------------|
 
         """
-        return self.config.to_target_dict()
-
-
-def generate_target_context(config: HasCredentials, cli_vars: Dict[str, Any]) -> Dict[str, Any]:
-    ctx = TargetContext(config, cli_vars)
-    return ctx.to_dict()
+        return self.target_dict

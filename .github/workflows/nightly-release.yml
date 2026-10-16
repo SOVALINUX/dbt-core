@@ -1,0 +1,97 @@
+# **what?**
+# Nightly releases to GitHub and PyPI. This workflow produces the following outcome:
+# - generate and validate data for night release (commit SHA, version number, release branch);
+# - pass data to release workflow;
+# - night release will be pushed to GitHub as a draft release;
+# - night build will be pushed to test PyPI;
+#
+# **why?**
+# Ensure an automated and tested release process for nightly builds
+#
+# **when?**
+# This workflow runs on schedule or can be run manually on demand.
+
+name: Nightly Test Release to GitHub and PyPI
+
+on:
+  workflow_dispatch: # for manual triggering
+  schedule:
+    - cron: 0 9 * * *
+
+permissions:
+  contents: write # this is the permission that allows creating a new release
+  packages: write # this is the permission that allows Docker release
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  RELEASE_BRANCH: "main"
+
+jobs:
+  aggregate-release-data:
+    runs-on: ${{ vars.UBUNTU_LATEST }}
+
+    outputs:
+      version_number: ${{ steps.nightly-release-version.outputs.number }}
+      release_branch: ${{ steps.release-branch.outputs.name }}
+
+    steps:
+      - name: "Checkout ${{ github.repository }} Branch ${{ env.RELEASE_BRANCH }}"
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_BRANCH }}
+
+      - name: "Get Current Version Number"
+        id: version-number-sources
+        run: |
+          current_version=$(grep '^version = ' core/dbt/__version__.py | sed 's/version = "\(.*\)"/\1/')
+          echo "current_version=$current_version" >> $GITHUB_OUTPUT
+
+      - name: "Audit Version And Parse Into Parts"
+        id: semver
+        uses: dbt-labs/actions/parse-semver@v1
+        with:
+          version: ${{ steps.version-number-sources.outputs.current_version }}
+
+      - name: "Get Current Date"
+        id: current-date
+        run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+      - name: "Generate Nightly Release Version Number"
+        id: nightly-release-version
+        run: |
+          number="${{ steps.semver.outputs.version }}.post${{ steps.current-date.outputs.date }}"
+          echo "number=$number" >> $GITHUB_OUTPUT
+
+      - name: "Audit Nightly Release Version And Parse Into Parts"
+        uses: dbt-labs/actions/parse-semver@v1
+        with:
+          version: ${{ steps.nightly-release-version.outputs.number }}
+
+      - name: "Set Release Branch"
+        id: release-branch
+        run: |
+          echo "name=${{ env.RELEASE_BRANCH }}" >> $GITHUB_OUTPUT
+
+  log-outputs-aggregate-release-data:
+    runs-on: ${{ vars.UBUNTU_LATEST }}
+    needs: [aggregate-release-data]
+
+    steps:
+      - name: "[DEBUG] Log Outputs"
+        run: |
+          echo version_number: ${{ needs.aggregate-release-data.outputs.version_number }}
+          echo release_branch: ${{ needs.aggregate-release-data.outputs.release_branch }}
+
+  release-github-pypi:
+    needs: [aggregate-release-data]
+
+    uses: ./.github/workflows/release.yml
+    with:
+      target_branch: ${{ needs.aggregate-release-data.outputs.release_branch }}
+      version_number: ${{ needs.aggregate-release-data.outputs.version_number }}
+      test_run: true
+      nightly_release: true
+    secrets: inherit

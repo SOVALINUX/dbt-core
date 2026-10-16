@@ -1,24 +1,31 @@
-import os
 from typing import Any, Dict, Optional
 
-from dbt.constants import SECRET_ENV_PREFIX, DEFAULT_ENV_PLACEHOLDER
-from dbt.contracts.connection import AdapterRequiredConfig
+from dbt.adapters.contracts.connection import AdapterRequiredConfig
+from dbt.constants import DEFAULT_ENV_PLACEHOLDER
+from dbt.context.base import (
+    BaseContext,
+    Var,
+    _get_env_var,
+    contextmember,
+    contextproperty,
+)
+from dbt.context.target import TargetContext
+from dbt.exceptions import EnvVarMissingError, SecretEnvVarLocationError
 from dbt.node_types import NodeType
 from dbt.utils import MultiDict
-
-from dbt.context.base import contextproperty, contextmember, Var
-from dbt.context.target import TargetContext
-from dbt.exceptions import raise_parsing_error, disallow_secret_env_var
+from dbt_common.constants import SECRET_ENV_PREFIX
+from dbt_common.context import get_invocation_context
 
 
 class ConfiguredContext(TargetContext):
     # subclasses are SchemaYamlContext, MacroResolvingContext, ManifestContext
     config: AdapterRequiredConfig
 
-    def __init__(self, config: AdapterRequiredConfig) -> None:
-        super().__init__(config, config.cli_vars)
+    def __init__(self, config: AdapterRequiredConfig, require_vars: bool = True) -> None:
+        super().__init__(config.to_target_dict(), config.cli_vars, require_vars=require_vars)
+        self.config = config
 
-    @contextproperty
+    @contextproperty()
     def project_name(self) -> str:
         return self.config.project_name
 
@@ -33,10 +40,10 @@ class FQNLookup:
 class ConfiguredVar(Var):
     def __init__(
         self,
-        context: Dict[str, Any],
+        context: BaseContext,
         config: AdapterRequiredConfig,
         project_name: str,
-    ):
+    ) -> None:
         super().__init__(context, config.cli_vars)
         self._config = config
         self._project_name = project_name
@@ -51,10 +58,11 @@ class ConfiguredVar(Var):
         adapter_type = self._config.credentials.type
         lookup = FQNLookup(self._project_name)
         active_vars = self._config.vars.vars_for(lookup, adapter_type)
-        all_vars = MultiDict([active_vars])
 
+        all_vars = MultiDict()
         if self._config.project_name != my_config.project_name:
             all_vars.add(my_config.vars.vars_for(lookup, adapter_type))
+        all_vars.add(active_vars)
 
         if var_name in all_vars:
             return all_vars[var_name]
@@ -78,18 +86,18 @@ class SchemaYamlContext(ConfiguredContext):
         self._project_name = project_name
         self.schema_yaml_vars = schema_yaml_vars
 
-    @contextproperty
+    @contextproperty()
     def var(self) -> ConfiguredVar:
-        return ConfiguredVar(self._ctx, self.config, self._project_name)
+        return ConfiguredVar(self, self.config, self._project_name)
 
-    @contextmember
+    @contextmember()
     def env_var(self, var: str, default: Optional[str] = None) -> str:
         return_value = None
         if var.startswith(SECRET_ENV_PREFIX):
-            disallow_secret_env_var(var)
-        if var in os.environ:
-            return_value = os.environ[var]
-        elif default is not None:
+            raise SecretEnvVarLocationError(var)
+        env = get_invocation_context().env
+        return_value, found_in_env = _get_env_var(env, var)
+        if return_value is None and default is not None:
             return_value = default
 
         if return_value is not None:
@@ -99,26 +107,27 @@ class SchemaYamlContext(ConfiguredContext):
                 # reparsing. If the default changes, the file will have been updated and therefore
                 # will be scheduled for reparsing anyways.
                 self.schema_yaml_vars.env_vars[var] = (
-                    return_value if var in os.environ else DEFAULT_ENV_PLACEHOLDER
+                    return_value if found_in_env else DEFAULT_ENV_PLACEHOLDER
                 )
 
             return return_value
         else:
-            msg = f"Env var required but not provided: '{var}'"
-            raise_parsing_error(msg)
+            raise EnvVarMissingError(var)
 
 
 class MacroResolvingContext(ConfiguredContext):
     def __init__(self, config):
         super().__init__(config)
 
-    @contextproperty
+    @contextproperty()
     def var(self) -> ConfiguredVar:
-        return ConfiguredVar(self._ctx, self.config, self.config.project_name)
+        return ConfiguredVar(self, self.config, self.config.project_name)
 
 
 def generate_schema_yml_context(
-    config: AdapterRequiredConfig, project_name: str, schema_yaml_vars: SchemaYamlVars = None
+    config: AdapterRequiredConfig,
+    project_name: str,
+    schema_yaml_vars: Optional[SchemaYamlVars] = None,
 ) -> Dict[str, Any]:
     ctx = SchemaYamlContext(config, project_name, schema_yaml_vars)
     return ctx.to_dict()

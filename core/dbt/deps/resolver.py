@@ -1,22 +1,28 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, NoReturn, Union, Type, Iterator, Set
+from typing import Any, Dict, Iterator, List, NoReturn, Set, Type
 
-from dbt.exceptions import raise_dependency_error, InternalException
-
-from dbt.config import Project, RuntimeConfig
-from dbt.config.renderer import DbtProjectYamlRenderer
-from dbt.deps.base import BasePackage, PinnedPackage, UnpinnedPackage
-from dbt.deps.local import LocalUnpinnedPackage
-from dbt.deps.git import GitUnpinnedPackage
-from dbt.deps.registry import RegistryUnpinnedPackage
-
+from dbt.config import Project
+from dbt.config.renderer import PackageRenderer
 from dbt.contracts.project import (
-    LocalPackage,
     GitPackage,
+    LocalPackage,
+    PackageSpec,
+    PrivatePackage,
     RegistryPackage,
+    TarballPackage,
 )
-
-PackageContract = Union[LocalPackage, GitPackage, RegistryPackage]
+from dbt.deps.base import BasePackage, PinnedPackage, UnpinnedPackage
+from dbt.deps.git import GitUnpinnedPackage
+from dbt.deps.local import LocalUnpinnedPackage
+from dbt.deps.private_package import PrivateUnpinnedPackage
+from dbt.deps.registry import RegistryUnpinnedPackage
+from dbt.deps.tarball import TarballUnpinnedPackage
+from dbt.exceptions import (
+    DependencyError,
+    DuplicateDependencyToRootError,
+    DuplicateProjectDependencyError,
+    MismatchedDependencyTypeError,
+)
 
 
 @dataclass
@@ -49,10 +55,7 @@ class PackageListing:
         self.packages[key_str] = value
 
     def _mismatched_types(self, old: UnpinnedPackage, new: UnpinnedPackage) -> NoReturn:
-        raise_dependency_error(
-            f"Cannot incorporate {new} ({new.__class__.__name__}) in {old} "
-            f"({old.__class__.__name__}): mismatched types"
-        )
+        raise MismatchedDependencyTypeError(new, old)
 
     def incorporate(self, package: UnpinnedPackage):
         key: str = self._pick_key(package)
@@ -64,23 +67,25 @@ class PackageListing:
         else:
             self.packages[key] = package
 
-    def update_from(self, src: List[PackageContract]) -> None:
+    def update_from(self, src: List[PackageSpec]) -> None:
         pkg: UnpinnedPackage
         for contract in src:
             if isinstance(contract, LocalPackage):
                 pkg = LocalUnpinnedPackage.from_contract(contract)
+            elif isinstance(contract, TarballPackage):
+                pkg = TarballUnpinnedPackage.from_contract(contract)
             elif isinstance(contract, GitPackage):
                 pkg = GitUnpinnedPackage.from_contract(contract)
+            elif isinstance(contract, PrivatePackage):
+                pkg = PrivateUnpinnedPackage.from_contract(contract)
             elif isinstance(contract, RegistryPackage):
                 pkg = RegistryUnpinnedPackage.from_contract(contract)
             else:
-                raise InternalException("Invalid package type {}".format(type(contract)))
+                raise DependencyError("Invalid package type {}".format(type(contract)))
             self.incorporate(pkg)
 
     @classmethod
-    def from_contracts(
-        cls: Type["PackageListing"], src: List[PackageContract]
-    ) -> "PackageListing":
+    def from_contracts(cls: Type["PackageListing"], src: List[PackageSpec]) -> "PackageListing":
         self = cls({})
         self.update_from(src)
         return self
@@ -94,44 +99,50 @@ class PackageListing:
 
 def _check_for_duplicate_project_names(
     final_deps: List[PinnedPackage],
-    config: Project,
-    renderer: DbtProjectYamlRenderer,
+    project: Project,
+    renderer: PackageRenderer,
 ):
     seen: Set[str] = set()
     for package in final_deps:
-        project_name = package.get_project_name(config, renderer)
+        project_name = package.get_project_name(project, renderer)
         if project_name in seen:
-            raise_dependency_error(
-                f'Found duplicate project "{project_name}". This occurs when '
-                "a dependency has the same project name as some other "
-                "dependency."
-            )
-        elif project_name == config.project_name:
-            raise_dependency_error(
-                "Found a dependency with the same name as the root project "
-                f'"{project_name}". Package names must be unique in a project.'
-                " Please rename one of these packages."
-            )
+            raise DuplicateProjectDependencyError(project_name)
+        elif project_name == project.project_name:
+            raise DuplicateDependencyToRootError(project_name)
         seen.add(project_name)
 
 
 def resolve_packages(
-    packages: List[PackageContract], config: RuntimeConfig
+    packages: List[PackageSpec],
+    project: Project,
+    cli_vars: Dict[str, Any],
 ) -> List[PinnedPackage]:
     pending = PackageListing.from_contracts(packages)
     final = PackageListing()
 
-    renderer = DbtProjectYamlRenderer(config, config.cli_vars)
+    renderer = PackageRenderer(cli_vars)
 
     while pending:
         next_pending = PackageListing()
         # resolve the dependency in question
         for package in pending:
             final.incorporate(package)
-            target = final[package].resolved().fetch_metadata(config, renderer)
+            target = final[package].resolved().fetch_metadata(project, renderer)
             next_pending.update_from(target.packages)
         pending = next_pending
 
     resolved = final.resolved()
-    _check_for_duplicate_project_names(resolved, config, renderer)
+    _check_for_duplicate_project_names(resolved, project, renderer)
+    return resolved
+
+
+def resolve_lock_packages(packages: List[PackageSpec]) -> List[PinnedPackage]:
+    lock_packages = PackageListing.from_contracts(packages)
+    final = PackageListing()
+
+    for package in lock_packages:
+        final.incorporate(package)
+
+    resolved = final.resolved()
+
     return resolved

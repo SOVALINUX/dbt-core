@@ -1,10 +1,11 @@
 from typing import Dict, MutableMapping, Optional
-from dbt.contracts.graph.parsed import ParsedMacro
-from dbt.exceptions import raise_duplicate_macro_name, raise_compiler_error
-from dbt.include.global_project import PROJECT_NAME as GLOBAL_PROJECT_NAME
-from dbt.clients.jinja import MacroGenerator
 
-MacroNamespace = Dict[str, ParsedMacro]
+from dbt.clients.jinja import MacroGenerator
+from dbt.contracts.graph.nodes import Macro
+from dbt.exceptions import DuplicateMacroNameError, PackageNotFoundForMacroError
+from dbt.include.global_project import PROJECT_NAME as GLOBAL_PROJECT_NAME
+
+MacroNamespace = Dict[str, Macro]
 
 
 # This class builds the MacroResolver by adding macros
@@ -21,7 +22,7 @@ MacroNamespace = Dict[str, ParsedMacro]
 class MacroResolver:
     def __init__(
         self,
-        macros: MutableMapping[str, ParsedMacro],
+        macros: MutableMapping[str, Macro],
         root_project_name: str,
         internal_package_names,
     ) -> None:
@@ -40,7 +41,7 @@ class MacroResolver:
         self._build_internal_packages_namespace()
         self._build_macros_by_name()
 
-    def _build_internal_packages_namespace(self):
+    def _build_internal_packages_namespace(self) -> None:
         # Iterate in reverse-order and overwrite: the packages that are first
         # in the list are the ones we want to "win".
         self.internal_packages_namespace: MacroNamespace = {}
@@ -56,7 +57,7 @@ class MacroResolver:
     # root package namespace
     # non-internal packages (that aren't local or root)
     # dbt internal packages
-    def _build_macros_by_name(self):
+    def _build_macros_by_name(self) -> None:
         macros_by_name = {}
 
         # all internal packages (already in the right order)
@@ -77,8 +78,8 @@ class MacroResolver:
     def _add_macro_to(
         self,
         package_namespaces: Dict[str, MacroNamespace],
-        macro: ParsedMacro,
-    ):
+        macro: Macro,
+    ) -> None:
         if macro.package_name in package_namespaces:
             namespace = package_namespaces[macro.package_name]
         else:
@@ -86,10 +87,10 @@ class MacroResolver:
             package_namespaces[macro.package_name] = namespace
 
         if macro.name in namespace:
-            raise_duplicate_macro_name(macro, macro, macro.package_name)
+            raise DuplicateMacroNameError(macro, macro, macro.package_name)
         package_namespaces[macro.package_name][macro.name] = macro
 
-    def add_macro(self, macro: ParsedMacro):
+    def add_macro(self, macro: Macro) -> None:
         macro_name: str = macro.name
 
         # internal macros (from plugins) will be processed separately from
@@ -103,15 +104,21 @@ class MacroResolver:
             if macro.package_name == self.root_project_name:
                 self.root_package_macros[macro_name] = macro
 
-    def add_macros(self):
+    def add_macros(self) -> None:
         for macro in self.macros.values():
             self.add_macro(macro)
 
-    def get_macro(self, local_package, macro_name):
+    def get_macro(self, local_package, macro_name) -> Optional[Macro]:
         local_package_macros = {}
+        # If the macro is explicitly prefixed with an internal namespace
+        # (e.g. 'dbt.some_macro'), look there first
+        if local_package in self.internal_package_names:
+            local_package_macros = self.internal_packages[local_package]
+        # If the macro is explicitly prefixed with a different package name
+        # (e.g. 'dbt_utils.some_macro'), look there first
         if local_package not in self.internal_package_names and local_package in self.packages:
             local_package_macros = self.packages[local_package]
-        # First: search the local packages for this macro
+        # First: search the specified package for this macro
         if macro_name in local_package_macros:
             return local_package_macros[macro_name]
         # Now look up in the standard search order
@@ -119,7 +126,7 @@ class MacroResolver:
             return self.macros_by_name[macro_name]
         return None
 
-    def get_macro_id(self, local_package, macro_name):
+    def get_macro_id(self, local_package, macro_name) -> Optional[str]:
         macro = self.get_macro(local_package, macro_name)
         if macro is None:
             return None
@@ -181,7 +188,7 @@ class TestMacroNamespace:
         elif package_name in self.macro_resolver.packages:
             macro = self.macro_resolver.packages[package_name].get(name)
         else:
-            raise_compiler_error(f"Could not find package '{package_name}'")
+            raise PackageNotFoundForMacroError(package_name)
         if not macro:
             return None
         macro_func = MacroGenerator(macro, self.ctx, self.node, self.thread_ctx)

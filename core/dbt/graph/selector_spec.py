@@ -2,13 +2,15 @@ import os
 import re
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from dbt.dataclass_schema import StrEnum, dbtClassMixin
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
-from typing import Set, Iterator, List, Optional, Dict, Union, Any, Iterable, Tuple
+from dbt.exceptions import InvalidSelectorError
+from dbt.flags import get_flags
+from dbt_common.dataclass_schema import StrEnum, dbtClassMixin
+from dbt_common.exceptions import DbtRuntimeError
+
 from .graph import UniqueId
 from .selector_methods import MethodName
-from dbt.exceptions import RuntimeException, InvalidSelectorException
-
 
 RAW_SELECTOR_PATTERN = re.compile(
     r"\A"
@@ -24,6 +26,8 @@ SELECTOR_METHOD_SEPARATOR = "."
 class IndirectSelection(StrEnum):
     Eager = "eager"
     Cautious = "cautious"
+    Buildable = "buildable"
+    Empty = "empty"
 
 
 def _probably_path(value: str):
@@ -46,7 +50,7 @@ def _match_to_int(match: Dict[str, str], key: str) -> Optional[int]:
     try:
         return int(raw)
     except ValueError as exc:
-        raise RuntimeException(f"Invalid node spec - could not handle parent depth {raw}") from exc
+        raise DbtRuntimeError(f"Invalid node spec - could not handle parent depth {raw}") from exc
 
 
 SelectionSpec = Union[
@@ -72,7 +76,7 @@ class SelectionCriteria:
 
     def __post_init__(self):
         if self.children and self.childrens_parents:
-            raise RuntimeException(
+            raise DbtRuntimeError(
                 f'Invalid node spec {self.raw} - "@" prefix and "+" suffix ' "are incompatible"
             )
 
@@ -95,10 +99,9 @@ class SelectionCriteria:
         try:
             method_name = MethodName(method_parts[0])
         except ValueError as exc:
-            raise InvalidSelectorException(
-                f"'{method_parts[0]}' is not a valid method name"
-            ) from exc
+            raise InvalidSelectorError(f"'{method_parts[0]}' is not a valid method name") from exc
 
+        # Following is for cases like config.severity and config.materialized
         method_arguments: List[str] = method_parts[1:]
 
         return method_name, method_arguments
@@ -108,10 +111,9 @@ class SelectionCriteria:
         cls,
         raw: Any,
         dct: Dict[str, Any],
-        indirect_selection: IndirectSelection = IndirectSelection.Eager,
     ) -> "SelectionCriteria":
         if "value" not in dct:
-            raise RuntimeException(f'Invalid node spec "{raw}" - no search value!')
+            raise DbtRuntimeError(f'Invalid node spec "{raw}" - no search value!')
         method_name, method_arguments = cls.parse_method(dct)
 
         parents_depth = _match_to_int(dct, "parents_depth")
@@ -119,7 +121,7 @@ class SelectionCriteria:
 
         # If defined field in selector, override CLI flag
         indirect_selection = IndirectSelection(
-            dct.get("indirect_selection", None) or indirect_selection
+            dct.get("indirect_selection", get_flags().INDIRECT_SELECTION)
         )
 
         return cls(
@@ -156,29 +158,27 @@ class SelectionCriteria:
         return dct
 
     @classmethod
-    def from_single_spec(
-        cls, raw: str, indirect_selection: IndirectSelection = IndirectSelection.Eager
-    ) -> "SelectionCriteria":
+    def from_single_spec(cls, raw: str) -> "SelectionCriteria":
         result = RAW_SELECTOR_PATTERN.match(raw)
         if result is None:
             # bad spec!
-            raise RuntimeException(f'Invalid selector spec "{raw}"')
+            raise DbtRuntimeError(f'Invalid selector spec "{raw}"')
 
-        return cls.selection_criteria_from_dict(
-            raw, result.groupdict(), indirect_selection=indirect_selection
-        )
+        return cls.selection_criteria_from_dict(raw, result.groupdict())
 
 
 class BaseSelectionGroup(dbtClassMixin, Iterable[SelectionSpec], metaclass=ABCMeta):
     def __init__(
         self,
         components: Iterable[SelectionSpec],
+        indirect_selection: IndirectSelection = IndirectSelection.Eager,
         expect_exists: bool = False,
         raw: Any = None,
-    ):
+    ) -> None:
         self.components: List[SelectionSpec] = list(components)
         self.expect_exists = expect_exists
         self.raw = raw
+        self.indirect_selection = indirect_selection
 
     def __iter__(self) -> Iterator[SelectionSpec]:
         for component in self.components:

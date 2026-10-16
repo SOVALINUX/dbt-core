@@ -1,13 +1,14 @@
+from collections import ChainMap
 from typing import List
 
+from dbt.adapters.contracts.connection import AdapterRequiredConfig
 from dbt.clients.jinja import MacroStack
-from dbt.contracts.connection import AdapterRequiredConfig
-from dbt.contracts.graph.manifest import Manifest
 from dbt.context.macro_resolver import TestMacroNamespace
+from dbt.contracts.graph.manifest import Manifest
 
-
+from .base import contextproperty
 from .configured import ConfiguredContext
-from .macros import MacroNamespaceBuilder
+from .macros import MacroNamespace, MacroNamespaceBuilder
 
 
 class ManifestContext(ConfiguredContext):
@@ -35,11 +36,11 @@ class ManifestContext(ConfiguredContext):
         # to be able to do: namespace.get_from_package(..)
         self.namespace = self._build_namespace()
 
-    def _build_namespace(self):
+    def _build_namespace(self) -> MacroNamespace:
         # this takes all the macros in the manifest and adds them
         # to the MacroNamespaceBuilder stored in self.namespace
         builder = self._get_namespace_builder()
-        return builder.build_namespace(self.manifest.macros.values(), self._ctx)
+        return builder.build_namespace(self.manifest.get_macros_by_package(), self._ctx)  # type: ignore
 
     def _get_namespace_builder(self) -> MacroNamespaceBuilder:
         # avoid an import loop
@@ -62,16 +63,27 @@ class ManifestContext(ConfiguredContext):
         if isinstance(self.namespace, TestMacroNamespace):
             dct.update(self.namespace.local_namespace)
             dct.update(self.namespace.project_namespace)
+            return dct
         else:
-            dct.update(self.namespace)
-        return dct
+            # The following is a performance optimization which creates a "virtual"
+            # copy of dct, updated with the values in namespace. The result is
+            # called cm and by using a ChainMap it avoids the very large cost of
+            # iterating every value of namespace.
+            cm = ChainMap(self.namespace, dct)
 
+            # These next lines repair certain assumptions which were important
+            # before the performance optimization:
+            # 1. The context has a key called 'context' whose value is a reference
+            #    to the full context.
+            # 2. That self.namespace has the updated version of dct as its context,
+            #    which is used for macro context later.
+            # 3. That self._ctx is the updated version of dct rather than just dct
+            cm.maps.insert(0, {"context": cm})
+            self.namespace.ctx = cm
+            self._ctx = cm
 
-class QueryHeaderContext(ManifestContext):
-    def __init__(self, config: AdapterRequiredConfig, manifest: Manifest) -> None:
-        super().__init__(config, manifest, config.project_name)
+            return cm
 
-
-def generate_query_header_context(config: AdapterRequiredConfig, manifest: Manifest):
-    ctx = QueryHeaderContext(config, manifest)
-    return ctx.to_dict()
+    @contextproperty()
+    def context_macro_stack(self):
+        return self.macro_stack

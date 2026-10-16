@@ -1,0 +1,6 @@
+kind: Features
+body: Serialize `datetime` and `date` values to ISO 8601 strings in the `tojson` Jinja function
+time: 2026-10-15T12:00:04.000000+00:00
+custom:
+    Author: krisstinkou
+    Issue: datetime-and-date-values-serialized-to-iso-8601-strings-in-tojson

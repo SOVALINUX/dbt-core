@@ -1,21 +1,17 @@
-import os
-import functools
-from typing import List
+from typing import Dict, List
 
-from dbt import semver
-from dbt.clients import registry, system
-from dbt.contracts.project import (
-    RegistryPackageMetadata,
-    RegistryPackage,
-)
-from dbt.deps.base import PinnedPackage, UnpinnedPackage, get_downloads_path
+from dbt.clients import registry
+from dbt.contracts.project import RegistryPackage, RegistryPackageMetadata
+from dbt.deps.base import PinnedPackage, UnpinnedPackage
 from dbt.exceptions import (
-    package_version_not_found,
-    VersionsNotCompatibleException,
-    DependencyException,
-    package_not_found,
+    DependencyError,
+    PackageNotFoundError,
+    PackageVersionNotFoundError,
 )
-from dbt.utils import _connection_exception_retry as connection_exception_retry
+from dbt.flags import get_flags
+from dbt.version import get_installed_version
+from dbt_common import semver
+from dbt_common.exceptions import VersionsNotCompatibleError
 
 
 class RegistryPackageMixin:
@@ -41,6 +37,12 @@ class RegistryPinnedPackage(RegistryPackageMixin, PinnedPackage):
     def name(self):
         return self.package
 
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "package": self.package,
+            "version": self.version,
+        }
+
     def source_type(self):
         return "hub"
 
@@ -58,32 +60,7 @@ class RegistryPinnedPackage(RegistryPackageMixin, PinnedPackage):
         return RegistryPackageMetadata.from_dict(dct)
 
     def install(self, project, renderer):
-        metadata = self.fetch_metadata(project, renderer)
-
-        tar_name = "{}.{}.tar.gz".format(self.package, self.version)
-        tar_path = os.path.realpath(os.path.join(get_downloads_path(), tar_name))
-        system.make_directory(os.path.dirname(tar_path))
-
-        download_url = metadata.downloads.tarball
-        deps_path = project.packages_install_path
-        package_name = self.get_project_name(project, renderer)
-
-        download_untar_fn = functools.partial(
-            self.download_and_untar, download_url, tar_path, deps_path, package_name
-        )
-        connection_exception_retry(download_untar_fn, 5)
-
-    def download_and_untar(self, download_url, tar_path, deps_path, package_name):
-        """
-        Sometimes the download of the files fails and we want to retry.  Sometimes the
-        download appears successful but the file did not make it through as expected
-        (generally due to a github incident).  Either way we want to retry downloading
-        and untarring to see if we can get a success.  Call this within
-        `_connection_exception_retry`
-        """
-
-        system.download(download_url, tar_path)
-        system.untar_package(tar_path, deps_path, package_name)
+        self._install(project, renderer)
 
 
 class RegistryUnpinnedPackage(RegistryPackageMixin, UnpinnedPackage[RegistryPinnedPackage]):
@@ -97,7 +74,7 @@ class RegistryUnpinnedPackage(RegistryPackageMixin, UnpinnedPackage[RegistryPinn
     def _check_in_index(self):
         index = registry.index_cached()
         if self.package not in index:
-            package_not_found(self.package)
+            raise PackageNotFoundError(self.package)
 
     @classmethod
     def from_contract(cls, contract: RegistryPackage) -> "RegistryUnpinnedPackage":
@@ -121,24 +98,33 @@ class RegistryUnpinnedPackage(RegistryPackageMixin, UnpinnedPackage[RegistryPinn
         self._check_in_index()
         try:
             range_ = semver.reduce_versions(*self.versions)
-        except VersionsNotCompatibleException as e:
+        except VersionsNotCompatibleError as e:
             new_msg = "Version error for package {}: {}".format(self.name, e)
-            raise DependencyException(new_msg) from e
-
-        available = registry.get_available_versions(self.package)
+            raise DependencyError(new_msg) from e
+        flags = get_flags()
+        should_version_check = bool(flags.VERSION_CHECK)
+        dbt_version = get_installed_version()
+        compatible_versions = registry.get_compatible_versions(
+            self.package, dbt_version, should_version_check
+        )
         prerelease_version_specified = any(bool(version.prerelease) for version in self.versions)
         installable = semver.filter_installable(
-            available, self.install_prerelease or prerelease_version_specified
+            compatible_versions, self.install_prerelease or prerelease_version_specified
         )
-        available_latest = installable[-1]
-
-        # for now, pick a version and then recurse. later on,
-        # we'll probably want to traverse multiple options
-        # so we can match packages. not going to make a difference
-        # right now.
-        target = semver.resolve_to_specific_version(range_, installable)
+        if installable:
+            # for now, pick a version and then recurse. later on,
+            # we'll probably want to traverse multiple options
+            # so we can match packages. not going to make a difference
+            # right now.
+            target = semver.resolve_to_specific_version(range_, installable)
+        else:
+            target = None
         if not target:
-            package_version_not_found(self.package, range_, installable)
+            # raise an exception if no installable target version is found
+            raise PackageVersionNotFoundError(
+                self.package, range_, installable, should_version_check
+            )
+        latest_compatible = installable[-1]
         return RegistryPinnedPackage(
-            package=self.package, version=target, version_latest=available_latest
+            package=self.package, version=target, version_latest=latest_compatible
         )

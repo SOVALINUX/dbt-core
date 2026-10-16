@@ -1,51 +1,33 @@
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
-import os
 
-from dbt.dataclass_schema import ValidationError
-
-from dbt import flags
-from dbt.clients.system import load_file_contents
+from dbt.adapters.contracts.connection import Credentials, HasCredentials
 from dbt.clients.yaml_helper import load_yaml_text
-from dbt.contracts.connection import Credentials, HasCredentials
-from dbt.contracts.project import ProfileConfig, UserConfig
-from dbt.exceptions import CompilationException
-from dbt.exceptions import DbtProfileError
-from dbt.exceptions import DbtProjectError
-from dbt.exceptions import ValidationException
-from dbt.exceptions import RuntimeException
-from dbt.exceptions import validator_error_message
+from dbt.contracts.project import ProfileConfig
 from dbt.events.types import MissingProfileTarget
-from dbt.events.functions import fire_event
-from dbt.utils import coerce_dict_str
+from dbt.exceptions import (
+    CompilationError,
+    DbtProfileError,
+    DbtProjectError,
+    DbtRuntimeError,
+    ProfileConfigError,
+)
+from dbt.flags import get_flags
+from dbt_common.clients.system import load_file_contents
+from dbt_common.dataclass_schema import ValidationError
+from dbt_common.events.functions import fire_event
+from dbt_common.exceptions import DbtValidationError
 
 from .renderer import ProfileRenderer
 
 DEFAULT_THREADS = 1
-
-DEFAULT_PROFILES_DIR = os.path.join(os.path.expanduser("~"), ".dbt")
 
 INVALID_PROFILE_MESSAGE = """
 dbt encountered an error while trying to read your profiles.yml file.
 
 {error_string}
 """
-
-
-NO_SUPPLIED_PROFILE_ERROR = """\
-dbt cannot run because no profile was specified for this dbt project.
-To specify a profile for this project, add a line like the this to
-your dbt_project.yml file:
-
-profile: [profile name]
-
-Here, [profile name] should be replaced with a profile name
-defined in your profiles.yml file. You can find profiles.yml here:
-
-{profiles_file}/profiles.yml
-""".format(
-    profiles_file=DEFAULT_PROFILES_DIR
-)
 
 
 def read_profile(profiles_dir: str) -> Dict[str, Any]:
@@ -60,24 +42,11 @@ def read_profile(profiles_dir: str) -> Dict[str, Any]:
                 msg = f"The profiles.yml file at {path} is empty"
                 raise DbtProfileError(INVALID_PROFILE_MESSAGE.format(error_string=msg))
             return yaml_content
-        except ValidationException as e:
+        except DbtValidationError as e:
             msg = INVALID_PROFILE_MESSAGE.format(error_string=e)
-            raise ValidationException(msg) from e
+            raise DbtValidationError(msg) from e
 
     return {}
-
-
-def read_user_config(directory: str) -> UserConfig:
-    try:
-        profile = read_profile(directory)
-        if profile:
-            user_config = coerce_dict_str(profile.get("config", {}))
-            if user_config is not None:
-                UserConfig.validate(user_config)
-                return UserConfig.from_dict(user_config)
-    except (RuntimeException, ValidationError):
-        pass
-    return UserConfig()
 
 
 # The Profile class is included in RuntimeConfig, so any attribute
@@ -87,28 +56,31 @@ def read_user_config(directory: str) -> UserConfig:
 class Profile(HasCredentials):
     profile_name: str
     target_name: str
-    user_config: UserConfig
     threads: int
     credentials: Credentials
     profile_env_vars: Dict[str, Any]
+    log_cache_events: bool
 
     def __init__(
         self,
         profile_name: str,
         target_name: str,
-        user_config: UserConfig,
         threads: int,
         credentials: Credentials,
-    ):
-        """Explicitly defining `__init__` to work around bug in Python 3.9.7
+    ) -> None:
+        """
+        TODO: Is this no longer needed now that 3.9 is no longer supported?
+        Explicitly defining `__init__` to work around bug in Python 3.9.7
         https://bugs.python.org/issue45081
         """
         self.profile_name = profile_name
         self.target_name = target_name
-        self.user_config = user_config
         self.threads = threads
         self.credentials = credentials
         self.profile_env_vars = {}  # never available on init
+        self.log_cache_events = (
+            get_flags().LOG_CACHE_EVENTS
+        )  # never available on init, set for adapter instantiation via AdapterRequiredConfig
 
     def to_profile_info(self, serialize_credentials: bool = False) -> Dict[str, Any]:
         """Unlike to_project_config, this dict is not a mirror of any existing
@@ -122,12 +94,10 @@ class Profile(HasCredentials):
         result = {
             "profile_name": self.profile_name,
             "target_name": self.target_name,
-            "user_config": self.user_config,
             "threads": self.threads,
             "credentials": self.credentials,
         }
         if serialize_credentials:
-            result["user_config"] = self.user_config.to_dict(omit_none=True)
             result["credentials"] = self.credentials.to_dict(omit_none=True)
         return result
 
@@ -140,7 +110,6 @@ class Profile(HasCredentials):
                 "name": self.target_name,
                 "target_name": self.target_name,
                 "profile_name": self.profile_name,
-                "config": self.user_config.to_dict(omit_none=True),
             }
         )
         return target
@@ -158,7 +127,7 @@ class Profile(HasCredentials):
             dct = self.to_profile_info(serialize_credentials=True)
             ProfileConfig.validate(dct)
         except ValidationError as exc:
-            raise DbtProfileError(validator_error_message(exc)) from exc
+            raise ProfileConfigError(exc) from exc
 
     @staticmethod
     def _credentials_from_profile(
@@ -182,8 +151,8 @@ class Profile(HasCredentials):
             data = cls.translate_aliases(profile)
             cls.validate(data)
             credentials = cls.from_dict(data)
-        except (RuntimeException, ValidationError) as e:
-            msg = str(e) if isinstance(e, RuntimeException) else e.message
+        except (DbtRuntimeError, ValidationError) as e:
+            msg = str(e) if isinstance(e, DbtRuntimeError) else e.message
             raise DbtProfileError(
                 'Credentials in profile "{}", target "{}" invalid: {}'.format(
                     profile_name, target_name, msg
@@ -197,10 +166,33 @@ class Profile(HasCredentials):
         args_profile_name: Optional[str],
         project_profile_name: Optional[str] = None,
     ) -> str:
+        # TODO: Duplicating this method as direct copy of the implementation in dbt.cli.resolvers
+        # dbt.cli.resolvers implementation can't be used because it causes a circular dependency.
+        # This should be removed and use a safe default access on the Flags module when
+        # https://github.com/dbt-labs/dbt-core/issues/6259 is closed.
+        def default_profiles_dir():
+            from pathlib import Path
+
+            return Path.cwd() if (Path.cwd() / "profiles.yml").exists() else Path.home() / ".dbt"
+
         profile_name = project_profile_name
         if args_profile_name is not None:
             profile_name = args_profile_name
         if profile_name is None:
+            NO_SUPPLIED_PROFILE_ERROR = """\
+dbt cannot run because no profile was specified for this dbt project.
+To specify a profile for this project, add a line like the this to
+your dbt_project.yml file:
+
+profile: [profile name]
+
+Here, [profile name] should be replaced with a profile name
+defined in your profiles.yml file. You can find profiles.yml here:
+
+{profiles_file}/profiles.yml
+""".format(
+                profiles_file=default_profiles_dir()
+            )
             raise DbtProjectError(NO_SUPPLIED_PROFILE_ERROR)
         return profile_name
 
@@ -239,7 +231,6 @@ class Profile(HasCredentials):
         threads: int,
         profile_name: str,
         target_name: str,
-        user_config: Optional[Dict[str, Any]] = None,
     ) -> "Profile":
         """Create a profile from an existing set of Credentials and the
         remaining information.
@@ -248,20 +239,13 @@ class Profile(HasCredentials):
         :param threads: The number of threads to use for connections.
         :param profile_name: The profile name used for this profile.
         :param target_name: The target name used for this profile.
-        :param user_config: The user-level config block from the
-            raw profiles, if specified.
         :raises DbtProfileError: If the profile is invalid.
         :returns: The new Profile object.
         """
-        if user_config is None:
-            user_config = {}
-        UserConfig.validate(user_config)
-        user_config_obj: UserConfig = UserConfig.from_dict(user_config)
 
         profile = cls(
             profile_name=profile_name,
             target_name=target_name,
-            user_config=user_config_obj,
             threads=threads,
             credentials=credentials,
         )
@@ -299,7 +283,7 @@ class Profile(HasCredentials):
 
         try:
             profile_data = renderer.render_data(raw_profile_data)
-        except CompilationException as exc:
+        except CompilationError as exc:
             raise DbtProfileError(str(exc)) from exc
         return target_name, profile_data
 
@@ -309,7 +293,6 @@ class Profile(HasCredentials):
         raw_profile: Dict[str, Any],
         profile_name: str,
         renderer: ProfileRenderer,
-        user_config: Optional[Dict[str, Any]] = None,
         target_override: Optional[str] = None,
         threads_override: Optional[int] = None,
     ) -> "Profile":
@@ -321,8 +304,6 @@ class Profile(HasCredentials):
             disk as yaml and its values rendered with jinja.
         :param profile_name: The profile name used.
         :param renderer: The config renderer.
-        :param user_config: The global config for the user, if it
-            was present.
         :param target_override: The target to use, if provided on
             the command line.
         :param threads_override: The thread count to use, if
@@ -331,9 +312,6 @@ class Profile(HasCredentials):
             target could not be found
         :returns: The new Profile object.
         """
-        # user_config is not rendered.
-        if user_config is None:
-            user_config = raw_profile.get("config")
         # TODO: should it be, and the values coerced to bool?
         target_name, profile_data = cls.render_profile(
             raw_profile, profile_name, target_override, renderer
@@ -354,7 +332,6 @@ class Profile(HasCredentials):
             profile_name=profile_name,
             target_name=target_name,
             threads=threads,
-            user_config=user_config,
         )
 
     @classmethod
@@ -389,23 +366,23 @@ class Profile(HasCredentials):
         if not raw_profile:
             msg = f"Profile {profile_name} in profiles.yml is empty"
             raise DbtProfileError(INVALID_PROFILE_MESSAGE.format(error_string=msg))
-        user_config = raw_profiles.get("config")
 
         return cls.from_raw_profile_info(
             raw_profile=raw_profile,
             profile_name=profile_name,
             renderer=renderer,
-            user_config=user_config,
             target_override=target_override,
             threads_override=threads_override,
         )
 
     @classmethod
-    def render_from_args(
+    def render(
         cls,
-        args: Any,
         renderer: ProfileRenderer,
         project_profile_name: Optional[str],
+        profile_name_override: Optional[str] = None,
+        target_override: Optional[str] = None,
+        threads_override: Optional[int] = None,
     ) -> "Profile":
         """Given the raw profiles as read from disk and the name of the desired
         profile if specified, return the profile component of the runtime
@@ -421,10 +398,9 @@ class Profile(HasCredentials):
             target could not be found.
         :returns Profile: The new Profile object.
         """
-        threads_override = getattr(args, "threads", None)
-        target_override = getattr(args, "target", None)
+        flags = get_flags()
         raw_profiles = read_profile(flags.PROFILES_DIR)
-        profile_name = cls.pick_profile_name(getattr(args, "profile", None), project_profile_name)
+        profile_name = cls.pick_profile_name(profile_name_override, project_profile_name)
         return cls.from_raw_profiles(
             raw_profiles=raw_profiles,
             profile_name=profile_name,

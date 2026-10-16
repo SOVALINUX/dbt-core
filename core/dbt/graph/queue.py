@@ -1,14 +1,20 @@
-import networkx as nx  # type: ignore
 import threading
-
 from queue import PriorityQueue
-from typing import Dict, Set, List, Generator, Optional
+from typing import Dict, Generator, List, Optional, Set
+
+import networkx as nx  # type: ignore
+
+from dbt.contracts.graph.manifest import Manifest
+from dbt.contracts.graph.nodes import (
+    Exposure,
+    GraphMemberNode,
+    Metric,
+    ModelNode,
+    SourceDefinition,
+)
+from dbt.node_types import NodeType
 
 from .graph import UniqueId
-from dbt.contracts.graph.parsed import ParsedSourceDefinition, ParsedExposure, ParsedMetric
-from dbt.contracts.graph.compiled import GraphMemberNode
-from dbt.contracts.graph.manifest import Manifest
-from dbt.node_types import NodeType
 
 
 class GraphQueue:
@@ -20,8 +26,15 @@ class GraphQueue:
     the same time, as there is an unlocked race!
     """
 
-    def __init__(self, graph: nx.DiGraph, manifest: Manifest, selected: Set[UniqueId]):
-        self.graph = graph
+    def __init__(
+        self,
+        graph: nx.DiGraph,
+        manifest: Manifest,
+        selected: Set[UniqueId],
+        preserve_edges: bool = True,
+    ) -> None:
+        # 'create_empty_copy' returns a copy of the graph G with all of the edges removed, and leaves nodes intact.
+        self.graph = graph if preserve_edges else nx.classes.function.create_empty_copy(graph)
         self.manifest = manifest
         self._selected = selected
         # store the queue as a priority queue.
@@ -29,6 +42,8 @@ class GraphQueue:
         # things that have been popped off the queue but not finished
         # and worker thread reservations
         self.in_progress: Set[UniqueId] = set()
+        # microbatch nodes that have been popped off the queue but not finished
+        self.in_progress_microbatch: Set[UniqueId] = set()
         # things that are in the queue
         self.queued: Set[UniqueId] = set()
         # this lock controls most things
@@ -36,7 +51,7 @@ class GraphQueue:
         # store the 'score' of each node as a number. Lower is higher priority.
         self._scores = self._get_scores(self.graph)
         # populate the initial queue
-        self._find_new_additions()
+        self._find_new_additions(list(self.graph.nodes()))
         # awaits after task end
         self.some_task_done = threading.Condition(self.lock)
 
@@ -48,7 +63,7 @@ class GraphQueue:
         if node.resource_type != NodeType.Model:
             return False
         # must be a Model - tell mypy this won't be a Source or Exposure or Metric
-        assert not isinstance(node, (ParsedSourceDefinition, ParsedExposure, ParsedMetric))
+        assert not isinstance(node, (SourceDefinition, Exposure, Metric))
         if node.is_ephemeral:
             return False
         return True
@@ -119,9 +134,15 @@ class GraphQueue:
         exceptions.
         """
         _, node_id = self.inner.get(block=block, timeout=timeout)
+        node = self.manifest.expect(node_id)
+        is_microbatch = (
+            isinstance(node, ModelNode) and node.config.incremental_strategy == "microbatch"
+        )
+
         with self.lock:
-            self._mark_in_progress(node_id)
-        return self.manifest.expect(node_id)
+            self._mark_in_progress(node_id, is_microbatch=is_microbatch)
+
+        return node
 
     def __len__(self) -> int:
         """The length of the queue is the number of tasks left for the queue to
@@ -152,12 +173,12 @@ class GraphQueue:
         """
         return node in self.in_progress or node in self.queued
 
-    def _find_new_additions(self) -> None:
+    def _find_new_additions(self, candidates) -> None:
         """Find any nodes in the graph that need to be added to the internal
         queue and add them.
         """
-        for node, in_degree in self.graph.in_degree():
-            if not self._already_known(node) and in_degree == 0:
+        for node in candidates:
+            if self.graph.in_degree(node) == 0 and not self._already_known(node):
                 self.inner.put((self._scores[node], node))
                 self.queued.add(node)
 
@@ -170,20 +191,26 @@ class GraphQueue:
         """
         with self.lock:
             self.in_progress.remove(node_id)
+            if node_id in self.in_progress_microbatch:
+                self.in_progress_microbatch.remove(node_id)
+            successors = list(self.graph.successors(node_id))
             self.graph.remove_node(node_id)
-            self._find_new_additions()
+            self._find_new_additions(successors)
             self.inner.task_done()
             self.some_task_done.notify_all()
 
-    def _mark_in_progress(self, node_id: UniqueId) -> None:
+    def _mark_in_progress(self, node_id: UniqueId, is_microbatch: bool = False) -> None:
         """Mark the node as 'in progress'.
 
         Callers must hold the lock.
 
         :param str node_id: The node ID to mark as in progress.
+        :param bool is_microbatch: Whether the node is a microbatch model.
         """
         self.queued.remove(node_id)
         self.in_progress.add(node_id)
+        if is_microbatch:
+            self.in_progress_microbatch.add(node_id)
 
     def join(self) -> None:
         """Join the queue. Blocks until all tasks are marked as done.

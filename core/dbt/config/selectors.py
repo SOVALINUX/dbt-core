@@ -1,27 +1,28 @@
-from pathlib import Path
 from copy import deepcopy
-from typing import Dict, Any, Union
-from dbt.clients.yaml_helper import yaml, Loader, Dumper, load_yaml_text  # noqa: F401
-from dbt.dataclass_schema import ValidationError
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
-from .renderer import BaseRenderer
-
-from dbt.clients.system import (
+from dbt.clients.yaml_helper import Dumper, Loader, load_yaml_text, yaml  # noqa: F401
+from dbt.contracts.selection import SelectorFile
+from dbt.exceptions import DbtSelectorsError, SelectorsParsingError
+from dbt.graph import SelectionSpec, parse_from_selectors_definition
+from dbt.graph.selector_spec import SelectionCriteria
+from dbt_common.clients.system import (
     load_file_contents,
     path_exists,
-    resolve_path_from_base,
+    resolve_multiple_paths_by_name_expression,
 )
-from dbt.contracts.selection import SelectorFile
-from dbt.exceptions import DbtSelectorsError, RuntimeException
-from dbt.graph import parse_from_selectors_definition, SelectionSpec
-from dbt.graph.selector_spec import SelectionCriteria
+from dbt_common.dataclass_schema import ValidationError
+from dbt_common.exceptions import DbtRuntimeError
+
+from .renderer import BaseRenderer
 
 MALFORMED_SELECTOR_ERROR = """\
 The selectors.yml file in this project is malformed. Please double check
 the contents of this file and fix any errors before retrying.
 
 You can find more information on the syntax for this file here:
-https://docs.getdbt.com/docs/package-management
+https://docs.getdbt.com/reference/node-selection/yaml-selectors
 
 Validator Error:
 {error}
@@ -46,7 +47,7 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
                 f"yaml-selectors",
                 result_type="invalid_selector",
             ) from exc
-        except RuntimeException as exc:
+        except DbtRuntimeError as exc:
             raise DbtSelectorsError(
                 f"Could not read selector file data: {exc}",
                 result_type="invalid_selector",
@@ -62,7 +63,7 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
     ) -> "SelectorConfig":
         try:
             rendered = renderer.render_data(data)
-        except (ValidationError, RuntimeException) as exc:
+        except (ValidationError, DbtRuntimeError) as exc:
             raise DbtSelectorsError(
                 f"Could not render selector data: {exc}",
                 result_type="invalid_selector",
@@ -77,7 +78,9 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
     ) -> "SelectorConfig":
         try:
             data = load_yaml_text(load_file_contents(str(path)))
-        except (ValidationError, RuntimeException) as exc:
+            if data is None:
+                raise ValidationError("No data found in selector file at path: {path}")
+        except (ValidationError, DbtRuntimeError) as exc:
             raise DbtSelectorsError(
                 f"Could not read selector file: {exc}",
                 result_type="invalid_selector",
@@ -91,13 +94,26 @@ class SelectorConfig(Dict[str, Dict[str, Union[SelectionSpec, bool]]]):
             raise
 
 
-def selector_data_from_root(project_root: str) -> Dict[str, Any]:
-    selector_filepath = resolve_path_from_base("selectors.yml", project_root)
-
-    if path_exists(selector_filepath):
-        selectors_dict = load_yaml_text(load_file_contents(selector_filepath))
-    else:
-        selectors_dict = None
+def selector_data_from_root(project_root: str) -> Optional[Dict[str, Any]]:
+    selectors_files = resolve_multiple_paths_by_name_expression(
+        "selectors/selectors*.yml", project_root
+    )
+    selectors_list: List[Any] = []
+    check_selectors_names: List[str] = []
+    for selector_filepath in selectors_files:
+        if path_exists(selector_filepath):
+            data = load_yaml_text(load_file_contents(selector_filepath))
+            data_selectors = data.get("selectors", [])
+            for data_selector in data_selectors:
+                if data_selector["name"] in check_selectors_names:
+                    raise SelectorsParsingError(
+                        f"There is several selectors with name {data_selector['name']} were found. Please fix it."
+                    )
+            selectors_list.extend(data_selectors)
+            check_selectors_names.extend(
+                [data_selector.get("name", "") for data_selector in data_selectors]
+            )
+    selectors_dict: Optional[Dict[str, Any]] = {"selectors": selectors_list} if selectors_list else None
     return selectors_dict
 
 
@@ -154,11 +170,6 @@ class SelectorDict:
             definition = {key: value}
         elif len(definition) == 1:
             definition = {"method": key, "value": value}
-        elif key == "method" and value == "selector":
-            sel_def = definition.get("value")
-            if sel_def not in selector_dict:
-                raise DbtSelectorsError(f"Existing selector definition for {sel_def} not found.")
-            return selector_dict[definition["value"]]["definition"]
         return definition
 
     @classmethod

@@ -11,7 +11,7 @@ sources:
         identifier: "{{ var('seed_name', 'invalid') }}"
         columns:
           - name: id
-            tests:
+            data_tests:
               - unique:
                   enabled: "{{ var('enabled_direct', None) | as_native }}"
               - accepted_values:
@@ -23,7 +23,7 @@ models:
   - name: model
     columns:
       - name: id
-        tests:
+        data_tests:
           - unique
           - accepted_values:
               values: [1,2,3,4]
@@ -77,6 +77,106 @@ tests__sleeper_agent_sql = """
 select 1 as fun
 
 """
+
+my_model = """
+select 1 as user
+"""
+
+my_model_2 = """
+select * from {{ ref('my_model') }}
+"""
+
+my_model_3 = """
+select * from {{ ref('my_model_2') }}
+"""
+
+my_model_2_disabled = """
+{{ config(enabled=false) }}
+select * from {{ ref('my_model') }}
+"""
+
+my_model_3_disabled = """
+{{ config(enabled=false) }}
+select * from {{ ref('my_model_2') }}
+"""
+
+my_model_2_enabled = """
+{{ config(enabled=true) }}
+select * from {{ ref('my_model') }}
+"""
+
+my_model_3_enabled = """
+{{ config(enabled=true) }}
+select * from {{ ref('my_model') }}
+"""
+
+schema_all_disabled_yml = """
+version: 2
+models:
+  - name: my_model
+  - name: my_model_2
+    config:
+      enabled: false
+  - name: my_model_3
+    config:
+      enabled: false
+"""
+
+schema_explicit_enabled_yml = """
+version: 2
+models:
+  - name: my_model
+  - name: my_model_2
+    config:
+      enabled: true
+  - name: my_model_3
+    config:
+      enabled: true
+"""
+
+schema_partial_disabled_yml = """
+version: 2
+models:
+  - name: my_model
+  - name: my_model_2
+    config:
+      enabled: false
+  - name: my_model_3
+"""
+
+schema_partial_enabled_yml = """
+version: 2
+models:
+  - name: my_model
+  - name: my_model_2
+    config:
+      enabled: True
+  - name: my_model_3
+"""
+
+schema_invalid_enabled_yml = """
+version: 2
+models:
+  - name: my_model
+    config:
+      enabled: True and False
+  - name: my_model_3
+"""
+
+simple_snapshot = """{% snapshot mysnapshot %}
+
+    {{
+        config(
+          target_schema='snapshots',
+          strategy='timestamp',
+          unique_key='id',
+          updated_at='updated_at'
+        )
+    }}
+
+    select * from dummy
+
+{% endsnapshot %}"""
 
 
 class BaseConfigProject:

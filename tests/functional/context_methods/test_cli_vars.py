@@ -1,12 +1,16 @@
 import pytest
 import yaml
 
-from tests.fixtures.dbt_integration_project import dbt_integration_project  # noqa: F401
-
-from dbt.tests.util import run_dbt, get_artifact, write_config_file
+from dbt.exceptions import CompilationError, DbtRuntimeError
 from dbt.tests.fixtures.project import write_project_files
-from dbt.exceptions import RuntimeException, CompilationException
-
+from dbt.tests.util import (
+    get_artifact,
+    get_logging_events,
+    run_dbt,
+    run_dbt_and_capture,
+    write_config_file,
+)
+from tests.fixtures.dbt_integration_project import dbt_integration_project  # noqa: F401
 
 models_complex__schema_yml = """
 version: 2
@@ -14,17 +18,17 @@ models:
 - name: complex_model
   columns:
   - name: var_1
-    tests:
+    data_tests:
     - accepted_values:
         values:
         - abc
   - name: var_2
-    tests:
+    data_tests:
     - accepted_values:
         values:
         - def
   - name: var_3
-    tests:
+    data_tests:
     - accepted_values:
         values:
         - jkl
@@ -43,7 +47,7 @@ models:
 - name: simple_model
   columns:
   - name: simple
-    tests:
+    data_tests:
     - accepted_values:
         values:
         - abc
@@ -99,7 +103,7 @@ class TestCLIVarsSimple:
         results = run_dbt(["test", "--vars", "{simple: abc, unused: def}"])
         assert len(results) == 1
         run_results = get_artifact(project.project_root, "target", "run_results.json")
-        assert run_results["args"]["vars"] == "{simple: abc, unused: def}"
+        assert run_results["args"]["vars"] == {"simple": "abc", "unused": "def"}
 
 
 class TestCLIVarsProfile:
@@ -114,7 +118,7 @@ class TestCLIVarsProfile:
         profile = dbt_profile_data
         profile["test"]["outputs"]["default"]["host"] = "{{ var('db_host') }}"
         write_config_file(profile, project.profiles_dir, "profiles.yml")
-        with pytest.raises(RuntimeException):
+        with pytest.raises(DbtRuntimeError):
             results = run_dbt(["run"])
         results = run_dbt(["run", "--vars", "db_host: localhost"])
         assert len(results) == 1
@@ -148,7 +152,7 @@ class TestCLIVarsPackages:
         write_config_file(packages, project.project_root, "packages.yml")
 
         # Without vars args deps fails
-        with pytest.raises(RuntimeException):
+        with pytest.raises(DbtRuntimeError):
             run_dbt(["deps"])
 
         # With vars arg deps succeeds
@@ -200,9 +204,82 @@ class TestCLIVarsSelectors:
 
         # Update the selectors.yml file to have a var
         write_config_file(var_selectors_yml, project.project_root, "selectors.yml")
-        with pytest.raises(CompilationException):
+        with pytest.raises(CompilationError):
             run_dbt(["run"])
 
         # Var in cli_vars works
         results = run_dbt(["run", "--vars", "snapshot_target: dev"])
         assert len(results) == 1
+
+
+models_scrubbing__schema_yml = """
+version: 2
+models:
+- name: simple_model
+  columns:
+  - name: simple
+    data_tests:
+    - accepted_values:
+        values:
+        - abc
+"""
+
+models_scrubbing__simple_model_sql = """
+select
+    '{{ var("DBT_ENV_SECRET_simple") }}'::varchar as simple
+"""
+
+
+class TestCLIVarsScrubbing:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "schema.yml": models_scrubbing__schema_yml,
+            "simple_model.sql": models_scrubbing__simple_model_sql,
+        }
+
+    def test__run_results_scrubbing(self, project):
+        results, output = run_dbt_and_capture(
+            [
+                "--debug",
+                "--log-format",
+                "json",
+                "run",
+                "--vars",
+                "{DBT_ENV_SECRET_simple: abc, unused: def}",
+            ]
+        )
+        assert len(results) == 1
+
+        run_results = get_artifact(project.project_root, "target", "run_results.json")
+        assert run_results["args"]["vars"] == {
+            "DBT_ENV_SECRET_simple": "*****",
+            "unused": "def",
+        }
+
+        log_events = get_logging_events(log_output=output, event_name="StateCheckVarsHash")
+        assert len(log_events) == 1
+        assert (
+            log_events[0]["data"]["vars"] == "{'DBT_ENV_SECRET_simple': '*****', 'unused': 'def'}"
+        )
+
+    def test__exception_scrubbing(self, project):
+        results, output = run_dbt_and_capture(
+            [
+                "--debug",
+                "--log-format",
+                "json",
+                "run",
+                "--vars",
+                "{DBT_ENV_SECRET_unused: abc, unused: def}",
+            ],
+            False,
+        )
+        assert len(results) == 1
+
+        log_events = get_logging_events(log_output=output, event_name="CatchableExceptionOnRun")
+        assert len(log_events) == 1
+        assert (
+            '{\n      "DBT_ENV_SECRET_unused": "*****",\n      "unused": "def"\n  }'
+            in log_events[0]["info"]["msg"]
+        )

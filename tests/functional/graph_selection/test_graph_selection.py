@@ -1,10 +1,10 @@
-import os
 import json
+import os
+
 import pytest
 
-from dbt.tests.util import run_dbt, check_result_nodes_by_name
+from dbt.tests.util import check_result_nodes_by_name, run_dbt
 from tests.functional.graph_selection.fixtures import SelectionFixtures
-
 
 selectors_yml = """
             selectors:
@@ -75,6 +75,11 @@ class TestGraphSelection(SelectionFixtures):
         )
         assert_correct_schemas(project)
 
+    def test_group(self, project):
+        expected = ["test.unique_users_id", "test.users"]
+        results = run_dbt(["ls", "--select", "group:users_group"])
+        assert sorted(results) == expected
+
     def test_specific_model_and_children(self, project):
         results = run_dbt(["run", "--select", "users+"], expect_pass=False)
         check_result_nodes_by_name(
@@ -113,12 +118,46 @@ class TestGraphSelection(SelectionFixtures):
 
     def test_locally_qualified_name(self, project):
         results = run_dbt(["run", "--select", "test.subdir"])
-        check_result_nodes_by_name(results, ["nested_users", "subdir"])
+        check_result_nodes_by_name(results, ["nested_users", "subdir", "versioned"])
         assert_correct_schemas(project)
 
-        results = run_dbt(["run", "--select", "models/test/subdir*"])
-        check_result_nodes_by_name(results, ["nested_users", "subdir"])
+        os.chdir(
+            project.profiles_dir
+        )  # Change to random directory to test that Path selector works with project-dir
+        results = run_dbt(
+            ["run", "--project-dir", str(project.project_root), "--select", "models/test/subdir*"]
+        )
+        check_result_nodes_by_name(results, ["nested_users", "subdir", "versioned"])
         assert_correct_schemas(project)
+
+        results = run_dbt(
+            [
+                "build",
+                "--project-dir",
+                str(project.project_root),
+                "--select",
+                "models/patch_path_selection_schema.yml",
+            ]
+        )
+        check_result_nodes_by_name(results, ["subdir"])
+        assert_correct_schemas(project)
+
+        # Check that list command works
+        os.chdir(
+            project.profiles_dir
+        )  # Change to random directory to test that Path selector works with project-dir
+        results = run_dbt(
+            [
+                "-q",
+                "ls",
+                "-s",
+                "path:models/test/subdir.sql",
+                "--project-dir",
+                str(project.project_root),
+            ]
+            #           ["list", "--project-dir", str(project.project_root), "--select", "models/test/subdir*"]
+        )
+        assert len(results) == 1
 
     def test_locally_qualified_name_model_with_dots(self, project):
         results = run_dbt(["run", "--select", "alternative.users"], expect_pass=False)
@@ -158,6 +197,12 @@ class TestGraphSelection(SelectionFixtures):
         results = run_dbt(["run", "--select", "@emails_alt", "users_rollup"], expect_pass=False)
         check_result_nodes_by_name(results, ["users_rollup", "users", "emails_alt"])
 
+    def test_concat_multiple(self, project):
+        results = run_dbt(
+            ["run", "--select", "@emails_alt", "--select", "users_rollup"], expect_pass=False
+        )
+        check_result_nodes_by_name(results, ["users_rollup", "users", "emails_alt"])
+
     def test_concat_exclude(self, project):
         results = run_dbt(
             [
@@ -171,6 +216,22 @@ class TestGraphSelection(SelectionFixtures):
             expect_pass=False,
         )
         check_result_nodes_by_name(results, ["users_rollup", "users"])
+
+    def test_concat_exclude_multiple(self, project):
+        results = run_dbt(
+            [
+                "run",
+                "--select",
+                "@emails_alt",
+                "users_rollup",
+                "--exclude",
+                "users",
+                "--exclude",
+                "emails_alt",
+            ],
+            expect_pass=False,
+        )
+        check_result_nodes_by_name(results, ["users_rollup"])
 
     def test_concat_exclude_concat(self, project):
         results = run_dbt(
@@ -214,6 +275,7 @@ class TestGraphSelection(SelectionFixtures):
             "test.unique_users_rollup_gender",
             "test.users",
             "test.users_rollup",
+            "test.versioned.v3",
         ]
         results = run_dbt(["run", "-m", "+exposure:user_exposure"], expect_pass=False)
         check_result_nodes_by_name(
@@ -223,3 +285,22 @@ class TestGraphSelection(SelectionFixtures):
                 "users",
             ],
         )
+
+
+class TestListPathGraphSelection(SelectionFixtures):
+    def test_list_select_with_project_dir(self, project):
+        # Check that list command works
+        os.chdir(
+            project.profiles_dir
+        )  # Change to random directory to test that Path selector works with project-dir
+        results = run_dbt(
+            [
+                "-q",
+                "ls",
+                "-s",
+                "path:models/test/subdir.sql",
+                "--project-dir",
+                str(project.project_root),
+            ]
+        )
+        assert results == ["test.test.subdir"]

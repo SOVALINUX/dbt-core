@@ -1,30 +1,27 @@
+import glob
 import importlib
 import importlib.util
-import os
-import glob
 import json
+import os
+from importlib import metadata as importlib_metadata
 from typing import Iterator, List, Optional, Tuple
 
 import requests
 
-import dbt.exceptions
-import dbt.semver
-
-from dbt.ui import green, red, yellow
-from dbt import flags
+import dbt_common.semver as semver
+from dbt.__version__ import version as __version_string
+from dbt_common.ui import green, yellow
 
 PYPI_VERSION_URL = "https://pypi.org/pypi/dbt-core/json"
 
 
 def get_version_information() -> str:
-    flags.USE_COLORS = True if not flags.USE_COLORS else None
-
     installed = get_installed_version()
     latest = get_latest_version()
 
     core_msg_lines, core_info_msg = _get_core_msg_lines(installed, latest)
     core_msg = _format_core_msg(core_msg_lines)
-    plugin_version_msg = _get_plugins_msg(installed)
+    plugin_version_msg = _get_plugins_msg()
 
     msg_lines = [core_msg]
 
@@ -37,24 +34,27 @@ def get_version_information() -> str:
     return "\n\n".join(msg_lines)
 
 
-def get_installed_version() -> dbt.semver.VersionSpecifier:
-    return dbt.semver.VersionSpecifier.from_version_string(__version__)
+def get_installed_version() -> semver.VersionSpecifier:
+    return semver.VersionSpecifier.from_version_string(__version__)
 
 
 def get_latest_version(
     version_url: str = PYPI_VERSION_URL,
-) -> Optional[dbt.semver.VersionSpecifier]:
+) -> Optional[semver.VersionSpecifier]:
     try:
-        resp = requests.get(version_url)
+        resp = requests.get(version_url, timeout=1)
         data = resp.json()
         version_string = data["info"]["version"]
     except (json.JSONDecodeError, KeyError, requests.RequestException):
         return None
 
-    return dbt.semver.VersionSpecifier.from_version_string(version_string)
+    return semver.VersionSpecifier.from_version_string(version_string)
 
 
-def _get_core_msg_lines(installed, latest) -> Tuple[List[List[str]], str]:
+def _get_core_msg_lines(
+    installed: semver.VersionSpecifier,
+    latest: Optional[semver.VersionSpecifier],
+) -> Tuple[List[List[str]], str]:
     installed_s = installed.to_version_string(skip_matcher=True)
     installed_line = ["installed", installed_s, ""]
     update_info = ""
@@ -71,7 +71,7 @@ def _get_core_msg_lines(installed, latest) -> Tuple[List[List[str]], str]:
     latest_line = ["latest", latest_s, green("Up to date!")]
 
     if installed > latest:
-        latest_line[2] = green("Ahead of latest version!")
+        latest_line[2] = yellow("Ahead of latest version!")
     elif installed < latest:
         latest_line[2] = yellow("Update available!")
         update_info = (
@@ -99,7 +99,7 @@ def _format_core_msg(lines: List[List[str]]) -> str:
     return msg + "\n".join(msg_lines)
 
 
-def _get_plugins_msg(installed: dbt.semver.VersionSpecifier) -> str:
+def _get_plugins_msg() -> str:
     msg_lines = ["Plugins:"]
 
     plugins = []
@@ -115,7 +115,7 @@ def _get_plugins_msg(installed: dbt.semver.VersionSpecifier) -> str:
 
     if display_update_msg:
         update_msg = (
-            "  At least one plugin is out of date or incompatible with dbt-core.\n"
+            "  At least one plugin is out of date with dbt-core.\n"
             "  You can find instructions for upgrading here:\n"
             "  https://docs.getdbt.com/docs/installation"
         )
@@ -125,17 +125,12 @@ def _get_plugins_msg(installed: dbt.semver.VersionSpecifier) -> str:
 
 
 def _get_plugin_msg_info(
-    name: str, version_s: str, core: dbt.semver.VersionSpecifier
+    name: str, version_s: str, core: semver.VersionSpecifier
 ) -> Tuple[str, bool]:
-    plugin = dbt.semver.VersionSpecifier.from_version_string(version_s)
+    plugin = semver.VersionSpecifier.from_version_string(version_s)
     latest_plugin = get_latest_version(version_url=get_package_pypi_url(name))
 
     needs_update = False
-
-    if plugin.major != core.major or plugin.minor != core.minor:
-        compatibility_msg = red("Not compatible!")
-        needs_update = True
-        return (compatibility_msg, needs_update)
 
     if not latest_plugin:
         compatibility_msg = yellow("Could not determine latest version")
@@ -145,7 +140,7 @@ def _get_plugin_msg_info(
         compatibility_msg = yellow("Update available!")
         needs_update = True
     elif plugin > latest_plugin:
-        compatibility_msg = green("Ahead of latest version!")
+        compatibility_msg = yellow("Ahead of latest version!")
     else:
         compatibility_msg = green("Up to date!")
 
@@ -172,14 +167,12 @@ def _pad_lines(lines: List[List[str]], seperator: str = "") -> List[List[str]]:
 
     result: List[List[str]] = []
     for i, line in enumerate(lines):
-
         # add another list to hold padded strings
         if len(result) == i:
             result.append([""] * len(line))
 
         # iterate over columns in the line
         for j, item in enumerate(line):
-
             # the last column does not need padding
             if j == len(line) - 1:
                 result[i][j] = item
@@ -215,7 +208,7 @@ def _get_dbt_plugins_info() -> Iterator[Tuple[str, str]]:
         except ImportError:
             # not an adapter
             continue
-        yield plugin_name, mod.version  # type: ignore
+        yield plugin_name, mod.version
 
 
 def _get_adapter_plugin_names() -> Iterator[str]:
@@ -235,5 +228,13 @@ def _get_adapter_plugin_names() -> Iterator[str]:
             yield plugin_name
 
 
-__version__ = "1.3.0b1"
+def _resolve_version() -> str:
+    try:
+        return importlib_metadata.version("dbt-core")
+    except importlib_metadata.PackageNotFoundError:
+        # When running from source (not installed), use version from __version__.py
+        return __version_string
+
+
+__version__ = _resolve_version()
 installed = get_installed_version()
