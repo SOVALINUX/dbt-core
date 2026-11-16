@@ -1,0 +1,6 @@
+kind: Features
+body: Expose file system cache functions (`get_cache_file_contents`, `save_content_to_cache`, `get_content_hash`) to the Jinja context
+time: 2026-10-15T12:00:00.000000+00:00
+custom:
+    Author: krisstinkou
+    Issue: cache-support-exposed-to-jinja

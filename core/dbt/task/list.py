@@ -1,14 +1,29 @@
 import json
+from typing import Iterator, List, Optional
 
-from dbt.contracts.graph.parsed import ParsedExposure, ParsedSourceDefinition, ParsedMetric
+from dbt.artifacts.resources import Catalog
+from dbt.cli.flags import Flags
+from dbt.config.runtime import RuntimeConfig
+from dbt.contracts.graph.manifest import Manifest
+from dbt.contracts.graph.nodes import (
+    Exposure,
+    Metric,
+    ModelNode,
+    SavedQuery,
+    SemanticModel,
+    SourceDefinition,
+    UnitTestDefinition,
+)
+from dbt.events.types import NoNodesSelected
 from dbt.graph import ResourceTypeSelector
-from dbt.task.runnable import GraphRunnableTask, ManifestTask
-from dbt.task.test import TestSelector
 from dbt.node_types import NodeType
-from dbt.exceptions import RuntimeException, InternalException, warn_or_error
-from dbt.logger import log_manager
-import logging
-import dbt.events.functions as event_logger
+from dbt.task.base import resource_types_from_args
+from dbt.task.runnable import GraphRunnableTask
+from dbt.utils import JSONEncoder
+from dbt_common.events.contextvars import task_contextvars
+from dbt_common.events.functions import fire_event
+from dbt_common.events.types import PrintEvent
+from dbt_common.exceptions import DbtInternalError, DbtRuntimeError
 
 
 class ListTask(GraphRunnableTask):
@@ -21,6 +36,10 @@ class ListTask(GraphRunnableTask):
             NodeType.Source,
             NodeType.Exposure,
             NodeType.Metric,
+            NodeType.SavedQuery,
+            NodeType.SemanticModel,
+            NodeType.Unit,
+            NodeType.Function,
         )
     )
     ALL_RESOURCE_VALUES = DEFAULT_RESOURCE_VALUES | frozenset((NodeType.Analysis,))
@@ -30,6 +49,7 @@ class ListTask(GraphRunnableTask):
             "name",
             "package_name",
             "depends_on",
+            "direct_parents",
             "tags",
             "config",
             "resource_type",
@@ -39,72 +59,83 @@ class ListTask(GraphRunnableTask):
         )
     )
 
-    def __init__(self, args, config):
-        super().__init__(args, config)
+    def __init__(
+        self,
+        args: Flags,
+        config: RuntimeConfig,
+        manifest: Manifest,
+        catalogs: Optional[List[Catalog]] = None,
+    ) -> None:
+        super().__init__(args, config, manifest, catalogs=catalogs)
         if self.args.models:
             if self.args.select:
-                raise RuntimeException('"models" and "select" are mutually exclusive arguments')
+                raise DbtRuntimeError('"models" and "select" are mutually exclusive arguments')
             if self.args.resource_types:
-                raise RuntimeException(
+                raise DbtRuntimeError(
                     '"models" and "resource_type" are mutually exclusive ' "arguments"
                 )
-
-    @classmethod
-    def pre_init_hook(cls, args):
-        """A hook called before the task is initialized."""
-        # Filter out all INFO-level logging to allow piping ls output to jq, etc
-        # WARN level will still include all warnings + errors
-        # Do this by:
-        #  - returning the log level so that we can pass it into the 'level_override'
-        #    arg of events.functions.setup_event_logger() -- good!
-        #  - mutating the initialized, not-yet-configured STDOUT event logger
-        #    because it's being configured too late -- bad! TODO refactor!
-        log_manager.stderr_console()
-        event_logger.STDOUT_LOG.level = logging.WARN
-        super().pre_init_hook(args)
-        return logging.WARN
 
     def _iterate_selected_nodes(self):
         selector = self.get_node_selector()
         spec = self.get_selection_spec()
-        nodes = sorted(selector.get_selected(spec))
-        if not nodes:
-            warn_or_error("No nodes selected!")
+        unique_ids = sorted(selector.get_selected(spec))
+        if not unique_ids:
+            fire_event(NoNodesSelected(), force_warn_or_error_handling=True)
             return
         if self.manifest is None:
-            raise InternalException("manifest is None in _iterate_selected_nodes")
-        for node in nodes:
-            if node in self.manifest.nodes:
-                yield self.manifest.nodes[node]
-            elif node in self.manifest.sources:
-                yield self.manifest.sources[node]
-            elif node in self.manifest.exposures:
-                yield self.manifest.exposures[node]
-            elif node in self.manifest.metrics:
-                yield self.manifest.metrics[node]
+            raise DbtInternalError("manifest is None in _iterate_selected_nodes")
+        for unique_id in unique_ids:
+            if unique_id in self.manifest.nodes:
+                yield self.manifest.nodes[unique_id]
+            elif unique_id in self.manifest.sources:
+                yield self.manifest.sources[unique_id]
+            elif unique_id in self.manifest.exposures:
+                yield self.manifest.exposures[unique_id]
+            elif unique_id in self.manifest.metrics:
+                yield self.manifest.metrics[unique_id]
+            elif unique_id in self.manifest.semantic_models:
+                yield self.manifest.semantic_models[unique_id]
+            elif unique_id in self.manifest.unit_tests:
+                yield self.manifest.unit_tests[unique_id]
+            elif unique_id in self.manifest.saved_queries:
+                yield self.manifest.saved_queries[unique_id]
+            elif unique_id in self.manifest.functions:
+                yield self.manifest.functions[unique_id]
             else:
-                raise RuntimeException(
-                    f'Got an unexpected result from node selection: "{node}"'
-                    f"Expected a source or a node!"
+                raise DbtRuntimeError(
+                    f'Got an unexpected result from node selection: "{unique_id}"'
+                    f"Listing this node type is not yet supported!"
                 )
 
     def generate_selectors(self):
         for node in self._iterate_selected_nodes():
             if node.resource_type == NodeType.Source:
-                assert isinstance(node, ParsedSourceDefinition)
+                assert isinstance(node, SourceDefinition)
                 # sources are searched for by pkg.source_name.table_name
                 source_selector = ".".join([node.package_name, node.source_name, node.name])
                 yield f"source:{source_selector}"
             elif node.resource_type == NodeType.Exposure:
-                assert isinstance(node, ParsedExposure)
+                assert isinstance(node, Exposure)
                 # exposures are searched for by pkg.exposure_name
                 exposure_selector = ".".join([node.package_name, node.name])
                 yield f"exposure:{exposure_selector}"
             elif node.resource_type == NodeType.Metric:
-                assert isinstance(node, ParsedMetric)
+                assert isinstance(node, Metric)
                 # metrics are searched for by pkg.metric_name
                 metric_selector = ".".join([node.package_name, node.name])
                 yield f"metric:{metric_selector}"
+            elif node.resource_type == NodeType.SavedQuery:
+                assert isinstance(node, SavedQuery)
+                saved_query_selector = ".".join([node.package_name, node.name])
+                yield f"saved_query:{saved_query_selector}"
+            elif node.resource_type == NodeType.SemanticModel:
+                assert isinstance(node, SemanticModel)
+                semantic_model_selector = ".".join([node.package_name, node.name])
+                yield f"semantic_model:{semantic_model_selector}"
+            elif node.resource_type == NodeType.Unit:
+                assert isinstance(node, UnitTestDefinition)
+                unit_test_selector = ".".join([node.package_name, node.versioned_name])
+                yield f"unit_test:{unit_test_selector}"
             else:
                 # everything else is from `fqn`
                 yield ".".join(node.fqn)
@@ -113,62 +144,88 @@ class ListTask(GraphRunnableTask):
         for node in self._iterate_selected_nodes():
             yield node.search_name
 
+    def _get_nested_value(self, data, key_path):
+        """Get nested value using dot notation (e.g., 'config.materialized')"""
+        keys = key_path.split(".")
+        current = data
+        for key in keys:
+            if isinstance(current, dict) and key in current:
+                current = current[key]
+            else:
+                return None
+        return current
+
     def generate_json(self):
         for node in self._iterate_selected_nodes():
-            yield json.dumps(
-                {
-                    k: v
-                    for k, v in node.to_dict(omit_none=False).items()
-                    if (
-                        k in self.args.output_keys
-                        if self.args.output_keys is not None
-                        else k in self.ALLOWED_KEYS
-                    )
-                }
-            )
+            node_dict = node.to_dict(omit_none=False)
 
-    def generate_paths(self):
+            # direct_parents is stripped from ModelNode serialization (see
+            # ModelNode.__post_serialize__) so it doesn't leak into
+            # manifest.json. Reinstate it here so lineage consumers can read
+            # nearest-public-ancestor edges from `dbt ls --output=json`.
+            if isinstance(node, ModelNode):
+                node_dict["direct_parents"] = list(node.direct_parents)
+
+            if self.args.output_keys:
+                # Handle both nested and regular keys
+                result = {}
+                for key in self.args.output_keys:
+                    if "." in key:
+                        # Handle nested key (e.g., 'config.materialized')
+                        value = self._get_nested_value(node_dict, key)
+                        if value is not None:
+                            result[key] = value
+                    else:
+                        # Handle regular key
+                        if key in node_dict:
+                            result[key] = node_dict[key]
+            else:
+                # Use default allowed keys
+                result = {k: v for k, v in node_dict.items() if k in self.ALLOWED_KEYS}
+
+            yield json.dumps(result, cls=JSONEncoder)
+
+    def generate_paths(self) -> Iterator[str]:
         for node in self._iterate_selected_nodes():
             yield node.original_file_path
 
     def run(self):
-        ManifestTask._runtime_initialize(self)
-        output = self.args.output
-        if output == "selector":
-            generator = self.generate_selectors
-        elif output == "name":
-            generator = self.generate_names
-        elif output == "json":
-            generator = self.generate_json
-        elif output == "path":
-            generator = self.generate_paths
-        else:
-            raise InternalException("Invalid output {}".format(output))
+        # We set up a context manager here with "task_contextvars" because we
+        # we need the project_root in compile_manifest.
+        with task_contextvars(project_root=self.config.project_root):
+            self.compile_manifest()
+            output = self.args.output
+            if output == "selector":
+                generator = self.generate_selectors
+            elif output == "name":
+                generator = self.generate_names
+            elif output == "json":
+                generator = self.generate_json
+            elif output == "path":
+                generator = self.generate_paths
+            else:
+                raise DbtInternalError("Invalid output {}".format(output))
 
-        return self.output_results(generator())
+            return self.output_results(generator())
 
     def output_results(self, results):
+        """Log, or output a plain, newline-delimited, and ready-to-pipe list of nodes found."""
         for result in results:
             self.node_results.append(result)
-            print(result)
+            # No formatting, still get to stdout when --quiet is used
+            fire_event(PrintEvent(msg=result))
         return self.node_results
 
     @property
-    def resource_types(self):
+    def resource_types(self) -> List[NodeType]:
         if self.args.models:
             return [NodeType.Model]
 
-        if not self.args.resource_types:
-            return list(self.DEFAULT_RESOURCE_VALUES)
+        resource_types = resource_types_from_args(
+            self.args, set(self.ALL_RESOURCE_VALUES), set(self.DEFAULT_RESOURCE_VALUES)
+        )
 
-        values = set(self.args.resource_types)
-        if "default" in values:
-            values.remove("default")
-            values.update(self.DEFAULT_RESOURCE_VALUES)
-        if "all" in values:
-            values.remove("all")
-            values.update(self.ALL_RESOURCE_VALUES)
-        return list(values)
+        return list(resource_types)
 
     @property
     def selection_arg(self):
@@ -179,22 +236,17 @@ class ListTask(GraphRunnableTask):
         else:
             return self.args.select
 
-    def get_node_selector(self):
+    def get_node_selector(self) -> ResourceTypeSelector:
         if self.manifest is None or self.graph is None:
-            raise InternalException("manifest and graph must be set to get perform node selection")
-        if self.resource_types == [NodeType.Test]:
-            return TestSelector(
-                graph=self.graph,
-                manifest=self.manifest,
-                previous_state=self.previous_state,
-            )
-        else:
-            return ResourceTypeSelector(
-                graph=self.graph,
-                manifest=self.manifest,
-                previous_state=self.previous_state,
-                resource_types=self.resource_types,
-            )
+            raise DbtInternalError("manifest and graph must be set to get perform node selection")
+        return ResourceTypeSelector(
+            graph=self.graph,
+            manifest=self.manifest,
+            previous_state=self.previous_state,
+            resource_types=self.resource_types,
+            include_empty_nodes=True,
+            selectors=self.config.selectors,
+        )
 
     def interpret_results(self, results):
         # list command should always return 0 as exit code

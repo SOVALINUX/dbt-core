@@ -33,9 +33,9 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.UBUNTU_LATEST }}
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v3
     - name: Wrangle latest tag
       id: is_latest
       uses: ./.github/actions/latest-wrangler

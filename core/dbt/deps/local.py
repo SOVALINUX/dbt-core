@@ -1,13 +1,13 @@
 import shutil
+from typing import Dict
 
-from dbt.clients import system
+from dbt.config.project import PartialProject, Project
+from dbt.config.renderer import PackageRenderer
+from dbt.contracts.project import LocalPackage, ProjectPackageMetadata
 from dbt.deps.base import PinnedPackage, UnpinnedPackage
-from dbt.contracts.project import (
-    ProjectPackageMetadata,
-    LocalPackage,
-)
-from dbt.events.functions import fire_event
 from dbt.events.types import DepsCreatingLocalSymlink, DepsSymlinkNotAvailable
+from dbt_common.clients import system
+from dbt_common.events.functions import fire_event
 
 
 class LocalPackageMixin:
@@ -27,6 +27,11 @@ class LocalPinnedPackage(LocalPackageMixin, PinnedPackage):
     def __init__(self, local: str) -> None:
         super().__init__(local)
 
+    def to_dict(self) -> Dict[str, str]:
+        return {
+            "local": self.local,
+        }
+
     def get_version(self):
         return None
 
@@ -39,27 +44,25 @@ class LocalPinnedPackage(LocalPackageMixin, PinnedPackage):
             project.project_root,
         )
 
-    def _fetch_metadata(self, project, renderer):
-        loaded = project.from_project_root(self.resolve_path(project), renderer)
-        return ProjectPackageMetadata.from_project(loaded)
+    def _fetch_metadata(
+        self, project: Project, renderer: PackageRenderer
+    ) -> ProjectPackageMetadata:
+        partial = PartialProject.from_project_root(self.resolve_path(project))
+        return partial.render_package_metadata(renderer)
 
     def install(self, project, renderer):
         src_path = self.resolve_path(project)
         dest_path = self.get_installation_path(project, renderer)
-
-        can_create_symlink = system.supports_symlinks()
 
         if system.path_exists(dest_path):
             if not system.path_is_symlink(dest_path):
                 system.rmdir(dest_path)
             else:
                 system.remove_file(dest_path)
-
-        if can_create_symlink:
+        try:
             fire_event(DepsCreatingLocalSymlink())
             system.make_symlink(src_path, dest_path)
-
-        else:
+        except OSError:
             fire_event(DepsSymlinkNotAvailable())
             shutil.copytree(src_path, dest_path)
 

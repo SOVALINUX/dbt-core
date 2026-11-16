@@ -1,70 +1,37 @@
 from typing import List
 
-from dbt.dataclass_schema import StrEnum
+# preserving import path during dbt/artifacts refactor
+from dbt.artifacts.resources.types import (  # noqa
+    AccessType,
+    ModelLanguage,
+    NodeType,
+    RunHookType,
+)
 
+EXECUTABLE_NODE_TYPES: List["NodeType"] = [
+    NodeType.Model,
+    NodeType.Test,
+    NodeType.Snapshot,
+    NodeType.Analysis,
+    NodeType.Operation,
+    NodeType.Seed,
+    NodeType.Documentation,
+    NodeType.RPCCall,
+    NodeType.SqlOperation,
+    NodeType.Function,
+]
 
-class NodeType(StrEnum):
-    Model = "model"
-    Analysis = "analysis"
-    Test = "test"
-    Snapshot = "snapshot"
-    Operation = "operation"
-    Seed = "seed"
-    # TODO: rm?
-    RPCCall = "rpc"
-    SqlOperation = "sql operation"
-    Documentation = "docs block"
-    Source = "source"
-    Macro = "macro"
-    Exposure = "exposure"
-    Metric = "metric"
+REFABLE_NODE_TYPES: List["NodeType"] = [
+    NodeType.Model,
+    NodeType.Seed,
+    NodeType.Snapshot,
+]
 
-    @classmethod
-    def executable(cls) -> List["NodeType"]:
-        return [
-            cls.Model,
-            cls.Test,
-            cls.Snapshot,
-            cls.Analysis,
-            cls.Operation,
-            cls.Seed,
-            cls.Documentation,
-            cls.RPCCall,
-            cls.SqlOperation,
-        ]
+TEST_NODE_TYPES: List["NodeType"] = [
+    NodeType.Test,
+    NodeType.Unit,
+]
 
-    @classmethod
-    def refable(cls) -> List["NodeType"]:
-        return [
-            cls.Model,
-            cls.Seed,
-            cls.Snapshot,
-        ]
-
-    @classmethod
-    def documentable(cls) -> List["NodeType"]:
-        return [
-            cls.Model,
-            cls.Seed,
-            cls.Snapshot,
-            cls.Source,
-            cls.Macro,
-            cls.Analysis,
-            cls.Exposure,
-            cls.Metric,
-        ]
-
-    def pluralize(self) -> str:
-        if self is self.Analysis:
-            return "analyses"
-        return f"{self}s"
-
-
-class RunHookType(StrEnum):
-    Start = "on-run-start"
-    End = "on-run-end"
-
-
-class ModelLanguage(StrEnum):
-    python = "python"
-    sql = "sql"
+VERSIONED_NODE_TYPES: List["NodeType"] = [
+    NodeType.Model,
+]

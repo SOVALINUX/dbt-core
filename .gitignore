@@ -11,8 +11,11 @@ __pycache__/
 env*/
 dbt_env/
 build/
+!tests/functional/build
+!core/dbt/docs/build
 develop-eggs/
 dist/
+dist-*/
 downloads/
 eggs/
 .eggs/
@@ -24,8 +27,11 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
-*.mypy_cache/
+.mypy_cache/
+.dmypy.json
 logs/
+.user.yml
+profiles.yml
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -49,7 +55,11 @@ coverage.xml
 *,cover
 .hypothesis/
 test.env
+makefile.test.env
 *.pytest_cache/
+
+# Unit test artifacts
+index.html
 
 
 # Translations
@@ -86,6 +96,7 @@ target/
 # pycharm
 .idea/
 venv/
+.venv*/
 
 # AWS credentials
 .aws/
@@ -95,7 +106,10 @@ venv/
 
 # vscode
 .vscode/
+*.code-workspace
 
 # poetry
-pyproject.toml
 poetry.lock
+
+# asdf
+.tool-versions

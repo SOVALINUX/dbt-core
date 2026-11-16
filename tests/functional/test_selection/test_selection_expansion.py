@@ -1,11 +1,7 @@
 import pytest
 
 from dbt.tests.util import run_dbt
-from tests.functional.test_selection.fixtures import (  # noqa: F401
-    tests,
-    models,
-    project_files,
-)
+from tests.functional.test_selection.fixtures import models, tests  # noqa: F401
 
 
 class TestSelectionExpansion:
@@ -77,7 +73,9 @@ class TestSelectionExpansion:
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "source_unique_my_src_my_tbl_fun",
+            "source_unique_my_src_my_tbl_fun_2",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(select, exclude, expected)
@@ -96,6 +94,7 @@ class TestSelectionExpansion:
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(select, exclude, expected)
@@ -112,6 +111,7 @@ class TestSelectionExpansion:
             "cf_a_src",
             "just_a",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
         ]
@@ -130,7 +130,9 @@ class TestSelectionExpansion:
             "cf_a_src",
             "just_a",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
             "source_unique_my_src_my_tbl_fun",
+            "source_unique_my_src_my_tbl_fun_2",
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
         ]
@@ -149,7 +151,9 @@ class TestSelectionExpansion:
             "just_a",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "source_unique_my_src_my_tbl_fun",
+            "source_unique_my_src_my_tbl_fun_2",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(select, exclude, expected)
@@ -167,6 +171,7 @@ class TestSelectionExpansion:
             "just_a",
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(select, exclude, expected)
@@ -178,8 +183,27 @@ class TestSelectionExpansion:
     ):
         select = "model_a"
         exclude = "unique_model_a_fun"
-        expected = ["just_a"]
+        expected = ["just_a", "unique_model_a_fun_2"]
         indirect_selection = "cautious"
+
+        self.list_tests_and_assert(select, exclude, expected, indirect_selection)
+        self.run_tests_and_assert(select, exclude, expected, indirect_selection)
+
+    def test_model_a_exclude_specific_test_buildable(
+        self,
+        project,
+    ):
+        select = "model_a"
+        exclude = "unique_model_a_fun"
+        expected = [
+            "just_a",
+            "cf_a_b",
+            "cf_a_src",
+            "relationships_model_a_fun__fun__ref_model_b_",
+            "relationships_model_a_fun__fun__source_my_src_my_tbl_",
+            "unique_model_a_fun_2",
+        ]
+        indirect_selection = "buildable"
 
         self.list_tests_and_assert(select, exclude, expected, indirect_selection)
         self.run_tests_and_assert(select, exclude, expected, indirect_selection)
@@ -194,7 +218,9 @@ class TestSelectionExpansion:
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "source_unique_my_src_my_tbl_fun",
+            "source_unique_my_src_my_tbl_fun_2",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(select, exclude, expected)
@@ -264,7 +290,7 @@ class TestSelectionExpansion:
     ):
         select = "model_a,test_name:unique"
         exclude = None
-        expected = ["unique_model_a_fun"]
+        expected = ["unique_model_a_fun", "unique_model_a_fun_2"]
 
         self.list_tests_and_assert(select, exclude, expected)
         self.run_tests_and_assert(select, exclude, expected)
@@ -293,6 +319,7 @@ class TestSelectionExpansion:
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(select, exclude, expected)
@@ -304,7 +331,60 @@ class TestSelectionExpansion:
     ):
         select = None
         exclude = "tag:column_level_tag"
-        expected = ["cf_a_b", "cf_a_src", "just_a", "source_unique_my_src_my_tbl_fun"]
+        expected = [
+            "cf_a_b",
+            "cf_a_src",
+            "just_a",
+            "source_unique_my_src_my_tbl_fun",
+            "source_unique_my_src_my_tbl_fun_2",
+        ]
+
+        self.list_tests_and_assert(select, exclude, expected)
+        self.run_tests_and_assert(select, exclude, expected)
+
+    def test_select_column_config_level_tag(
+        self,
+        project,
+    ):
+        select = "tag:column_config_level_tag"
+        exclude = None
+        expected = [
+            "relationships_model_a_fun__fun__ref_model_b_",
+            "relationships_model_a_fun__fun__source_my_src_my_tbl_",
+            "unique_model_a_fun",
+            "unique_model_a_fun_2",
+        ]
+
+        self.list_tests_and_assert(select, exclude, expected)
+        self.run_tests_and_assert(select, exclude, expected)
+
+    def test_select_source_column_config_level_tag(
+        self,
+        project,
+    ):
+        select = "tag:source_column_config_tag"
+        exclude = None
+        expected = [
+            "source_unique_my_src_my_tbl_fun",
+            "source_unique_my_src_my_tbl_fun_2",
+        ]
+
+        self.list_tests_and_assert(select, exclude, expected)
+        self.run_tests_and_assert(select, exclude, expected)
+
+    def test_exclude_column_config_level_tag(
+        self,
+        project,
+    ):
+        select = None
+        exclude = "tag:column_config_level_tag"
+        expected = [
+            "cf_a_b",
+            "cf_a_src",
+            "just_a",
+            "source_unique_my_src_my_tbl_fun",
+            "source_unique_my_src_my_tbl_fun_2",
+        ]
 
         self.list_tests_and_assert(select, exclude, expected)
         self.run_tests_and_assert(select, exclude, expected)
@@ -332,6 +412,7 @@ class TestSelectionExpansion:
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(select, exclude, expected)
@@ -350,6 +431,7 @@ class TestSelectionExpansion:
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(select, exclude, expected)
@@ -368,8 +450,45 @@ class TestSelectionExpansion:
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
         indirect_selection = "eager"
+
+        self.list_tests_and_assert(select, exclude, expected, indirect_selection)
+        self.run_tests_and_assert(select, exclude, expected, indirect_selection)
+
+    def test_model_a_indirect_selection_cautious(
+        self,
+        project,
+    ):
+        select = "model_a"
+        exclude = None
+        expected = [
+            "just_a",
+            "unique_model_a_fun",
+            "unique_model_a_fun_2",
+        ]
+        indirect_selection = "cautious"
+
+        self.list_tests_and_assert(select, exclude, expected, indirect_selection)
+        self.run_tests_and_assert(select, exclude, expected, indirect_selection)
+
+    def test_model_a_indirect_selection_buildable(
+        self,
+        project,
+    ):
+        select = "model_a"
+        exclude = None
+        expected = [
+            "cf_a_b",
+            "cf_a_src",
+            "just_a",
+            "relationships_model_a_fun__fun__ref_model_b_",
+            "relationships_model_a_fun__fun__source_my_src_my_tbl_",
+            "unique_model_a_fun",
+            "unique_model_a_fun_2",
+        ]
+        indirect_selection = "buildable"
 
         self.list_tests_and_assert(select, exclude, expected, indirect_selection)
         self.run_tests_and_assert(select, exclude, expected, indirect_selection)
@@ -392,6 +511,10 @@ class TestSelectionExpansion:
         self.list_tests_and_assert(select, exclude, expected, indirect_selection)
         self.run_tests_and_assert(select, exclude, expected, indirect_selection=indirect_selection)
 
+    def test_model_a_indirect_selection_empty(self, project):
+        results = run_dbt(["ls", "--indirect-selection", "empty", "--select", "model_a"])
+        assert len(results) == 1
+
 
 class TestExpansionWithSelectors(TestSelectionExpansion):
     @pytest.fixture(scope="class")
@@ -402,16 +525,21 @@ class TestExpansionWithSelectors(TestSelectionExpansion):
               definition:
                 method: fqn
                 value: model_a
-            - name: model_a_no_indirect_selection
+            - name: model_a_cautious_indirect_selection
               definition:
                 method: fqn
                 value: model_a
                 indirect_selection: "cautious"
-            - name: model_a_yes_indirect_selection
+            - name: model_a_eager_indirect_selection
               definition:
                 method: fqn
                 value: model_a
                 indirect_selection: "eager"
+            - name: model_a_buildable_indirect_selection
+              definition:
+                method: fqn
+                value: model_a
+                indirect_selection: "buildable"
         """
 
     def test_selector_model_a_unset_indirect_selection(
@@ -425,6 +553,7 @@ class TestExpansionWithSelectors(TestSelectionExpansion):
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(
@@ -440,26 +569,26 @@ class TestExpansionWithSelectors(TestSelectionExpansion):
             selector_name="model_a_unset_indirect_selection",
         )
 
-    def test_selector_model_a_no_indirect_selection(
+    def test_selector_model_a_cautious_indirect_selection(
         self,
         project,
     ):
-        expected = ["just_a", "unique_model_a_fun"]
+        expected = ["just_a", "unique_model_a_fun", "unique_model_a_fun_2"]
 
         self.list_tests_and_assert(
             include=None,
             exclude=None,
             expected_tests=expected,
-            selector_name="model_a_no_indirect_selection",
+            selector_name="model_a_cautious_indirect_selection",
         )
         self.run_tests_and_assert(
             include=None,
             exclude=None,
             expected_tests=expected,
-            selector_name="model_a_no_indirect_selection",
+            selector_name="model_a_cautious_indirect_selection",
         )
 
-    def test_selector_model_a_yes_indirect_selection(
+    def test_selector_model_a_eager_indirect_selection(
         self,
         project,
     ):
@@ -470,17 +599,45 @@ class TestExpansionWithSelectors(TestSelectionExpansion):
             "relationships_model_a_fun__fun__ref_model_b_",
             "relationships_model_a_fun__fun__source_my_src_my_tbl_",
             "unique_model_a_fun",
+            "unique_model_a_fun_2",
         ]
 
         self.list_tests_and_assert(
             include=None,
             exclude=None,
             expected_tests=expected,
-            selector_name="model_a_yes_indirect_selection",
+            selector_name="model_a_eager_indirect_selection",
         )
         self.run_tests_and_assert(
             include=None,
             exclude=None,
             expected_tests=expected,
-            selector_name="model_a_yes_indirect_selection",
+            selector_name="model_a_eager_indirect_selection",
+        )
+
+    def test_selector_model_a_buildable_indirect_selection(
+        self,
+        project,
+    ):
+        expected = [
+            "cf_a_b",
+            "cf_a_src",
+            "just_a",
+            "relationships_model_a_fun__fun__ref_model_b_",
+            "relationships_model_a_fun__fun__source_my_src_my_tbl_",
+            "unique_model_a_fun",
+            "unique_model_a_fun_2",
+        ]
+
+        self.list_tests_and_assert(
+            include=None,
+            exclude=None,
+            expected_tests=expected,
+            selector_name="model_a_buildable_indirect_selection",
+        )
+        self.run_tests_and_assert(
+            include=None,
+            exclude=None,
+            expected_tests=expected,
+            selector_name="model_a_buildable_indirect_selection",
         )

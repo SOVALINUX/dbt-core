@@ -1,0 +1,6 @@
+kind: Features
+body: Add `ord()` function to the Jinja context
+time: 2026-10-15T12:00:01.000000+00:00
+custom:
+    Author: krisstinkou
+    Issue: ord-function-added-to-jinja

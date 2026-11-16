@@ -1,18 +1,16 @@
 #!/usr/bin/env python
-from dataclasses import dataclass
-from argparse import ArgumentParser
-from pathlib import Path
 import json
-from typing import Type, Dict, Any
+from argparse import ArgumentParser
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Type
 
+from dbt.artifacts.schemas.base import VersionedSchema
+from dbt.artifacts.schemas.catalog import CatalogArtifact
+from dbt.artifacts.schemas.freshness import FreshnessExecutionResultArtifact
+from dbt.artifacts.schemas.run import RunResultsArtifact
 from dbt.contracts.graph.manifest import WritableManifest
-from dbt.contracts.results import (
-    CatalogArtifact,
-    RunResultsArtifact,
-    FreshnessExecutionResultArtifact,
-)
-from dbt.contracts.util import VersionedSchema
-from dbt.clients.system import write_file
+from dbt_common.clients.system import write_file
 
 
 @dataclass
@@ -38,6 +36,7 @@ class ArtifactInfo:
 
 @dataclass
 class Arguments:
+    artifact: str
     path: Path
 
     @classmethod
@@ -49,8 +48,15 @@ class Arguments:
             help="The dir to write artifact schema",
         )
 
+        parser.add_argument(
+            "--artifact",
+            type=str,
+            choices=["manifest", "sources", "run-results", "catalog"],
+            help="The name of the artifact to update",
+        )
+
         parsed = parser.parse_args()
-        return cls(path=parsed.path)
+        return cls(artifact=parsed.artifact, path=parsed.path)
 
 
 def collect_artifact_schema(args: Arguments):
@@ -58,10 +64,17 @@ def collect_artifact_schema(args: Arguments):
         FreshnessExecutionResultArtifact,
         RunResultsArtifact,
         CatalogArtifact,
+        # WritableManifest introduces new definitions in hologram which are likely
+        # getting persisted across invocations of json_schema and making their
+        # way to other written artifacts - so write it last as a short-term fix.
+        # https://github.com/dbt-labs/dbt-core/issues/7604
         WritableManifest,
     ]
+    filtered_artifacts = filter(
+        lambda a: a.dbt_schema_version.name == args.artifact or args.artifact is None, artifacts
+    )
     artifact_infos = []
-    for artifact_cls in artifacts:
+    for artifact_cls in filtered_artifacts:
         artifact_infos.append(ArtifactInfo.from_artifact_cls(artifact_cls))
 
     if args and args.path is not None:

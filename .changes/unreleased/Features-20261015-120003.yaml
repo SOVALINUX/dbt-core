@@ -1,0 +1,6 @@
+kind: Features
+body: Support multiple selector files (`selectors/selectors*.yml`) and fail on duplicate selector names
+time: 2026-10-15T12:00:03.000000+00:00
+custom:
+    Author: krisstinkou
+    Issue: multiple-selector-files-and-duplicate-selector-names

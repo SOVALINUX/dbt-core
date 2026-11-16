@@ -1,11 +1,11 @@
-import pytest
 import os
 
-from dbt.constants import SECRET_ENV_PREFIX
-from dbt.exceptions import ParsingException, InternalException
-from tests.functional.context_methods.first_dependency import FirstDependencyProject
-from dbt.tests.util import run_dbt, run_dbt_and_capture
+import pytest
 
+from dbt.exceptions import DbtInternalError, ParsingError
+from dbt.tests.util import read_file, run_dbt, run_dbt_and_capture
+from dbt_common.constants import SECRET_ENV_PREFIX
+from tests.functional.context_methods.first_dependency import FirstDependencyProject
 
 secret_bad__context_sql = """
 
@@ -30,7 +30,7 @@ class TestDisallowSecretModel:
         return {"context.sql": secret_bad__context_sql}
 
     def test_disallow_secret(self, project):
-        with pytest.raises(ParsingException):
+        with pytest.raises(ParsingError):
             run_dbt(["compile"])
 
 
@@ -62,6 +62,7 @@ select
     -- runtime variables
     '{{ run_started_at }}' as run_started_at,
     '{{ invocation_id }}'  as invocation_id,
+    '{{ thread_id }}'  as thread_id,
 
     '{{ env_var("DBT_TEST_ENV_VAR") }}' as env_var,
     'secret_variable' as env_var_secret, -- make sure the value itself is scrubbed from the logs
@@ -72,13 +73,15 @@ select
 class TestAllowSecretProfilePackage(FirstDependencyProject):
     @pytest.fixture(scope="class", autouse=True)
     def setup(self):
-        os.environ[SECRET_ENV_PREFIX + "USER"] = "root"
-        os.environ[SECRET_ENV_PREFIX + "PASS"] = "password"
-        os.environ[SECRET_ENV_PREFIX + "PACKAGE"] = "first_dependency"
+        os.environ[SECRET_ENV_PREFIX + "_USER"] = "root"
+        os.environ[SECRET_ENV_PREFIX + "_PASS"] = "password"
+        os.environ[SECRET_ENV_PREFIX + "_PACKAGE"] = "first_dependency"
+        os.environ[SECRET_ENV_PREFIX + "_GIT_TOKEN"] = "abc123"
         yield
-        del os.environ[SECRET_ENV_PREFIX + "USER"]
-        del os.environ[SECRET_ENV_PREFIX + "PASS"]
-        del os.environ[SECRET_ENV_PREFIX + "PACKAGE"]
+        del os.environ[SECRET_ENV_PREFIX + "_USER"]
+        del os.environ[SECRET_ENV_PREFIX + "_PASS"]
+        del os.environ[SECRET_ENV_PREFIX + "_PACKAGE"]
+        del os.environ[SECRET_ENV_PREFIX + "_GIT_TOKEN"]
 
     @pytest.fixture(scope="class")
     def models(self):
@@ -88,7 +91,19 @@ class TestAllowSecretProfilePackage(FirstDependencyProject):
     def packages(self):
         return {
             "packages": [
-                {"local": "{{ env_var('DBT_ENV_SECRET_PACKAGE') }}"},
+                {
+                    # the raw value of this secret *will* be written to lock file
+                    "local": "{{ env_var('DBT_ENV_SECRET_PACKAGE') }}"
+                },
+                {
+                    # this secret env var will *not* be written to lock file
+                    "git": "https://{{ env_var('DBT_ENV_SECRET_GIT_TOKEN') }}@github.com/dbt-labs/dbt-external-tables.git"
+                },
+                {
+                    # this secret env var will *not* be written to lock file
+                    "tarball": "https://{{ env_var('DBT_ENV_SECRET_GIT_TOKEN') }}@github.com/dbt-labs/dbt-utils/archive/refs/tags/1.1.1.tar.gz",
+                    "name": "dbt_utils",
+                },
             ]
         }
 
@@ -107,13 +122,22 @@ class TestAllowSecretProfilePackage(FirstDependencyProject):
 
     def test_allow_secrets(self, project, first_dependency):
         _, log_output = run_dbt_and_capture(["deps"])
+        lock_file_contents = read_file("package-lock.yml")
+
+        # this will not be written to logs or lock file
+        assert not ("abc123" in log_output)
+        assert not ("abc123" in lock_file_contents)
+        assert "{{ env_var('DBT_ENV_SECRET_GIT_TOKEN') }}" in lock_file_contents
+
+        # this will be scrubbed from logs, but not from the lock file
         assert not ("first_dependency" in log_output)
+        assert "first_dependency" in lock_file_contents
 
 
 class TestCloneFailSecretScrubbed:
     @pytest.fixture(scope="class", autouse=True)
     def setup(self):
-        os.environ[SECRET_ENV_PREFIX + "GIT_TOKEN"] = "abc123"
+        os.environ[SECRET_ENV_PREFIX + "_GIT_TOKEN"] = "abc123"
 
     @pytest.fixture(scope="class")
     def models(self):
@@ -130,7 +154,7 @@ class TestCloneFailSecretScrubbed:
         }
 
     def test_fail_clone_with_scrubbing(self, project):
-        with pytest.raises(InternalException) as excinfo:
+        with pytest.raises(DbtInternalError) as excinfo:
             _, log_output = run_dbt_and_capture(["deps"])
 
         assert "abc123" not in str(excinfo.value)
@@ -149,7 +173,7 @@ class TestCloneFailSecretNotRendered(TestCloneFailSecretScrubbed):
         }
 
     def test_fail_clone_with_scrubbing(self, project):
-        with pytest.raises(InternalException) as excinfo:
+        with pytest.raises(DbtInternalError) as excinfo:
             _, log_output = run_dbt_and_capture(["deps"])
 
         # we should not see any manipulated form of the secret value (abc123) here

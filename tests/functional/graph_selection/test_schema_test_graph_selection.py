@@ -1,8 +1,7 @@
 import pytest
 
-from dbt.tests.util import run_dbt
 from dbt.tests.fixtures.project import write_project_files
-
+from dbt.tests.util import run_dbt
 from tests.fixtures.dbt_integration_project import dbt_integration_project  # noqa: F401
 from tests.functional.graph_selection.fixtures import SelectionFixtures
 
@@ -12,7 +11,7 @@ def run_schema_and_assert(project, include, exclude, expected_tests):
     run_dbt(["deps"])
     run_dbt(["seed"])
     results = run_dbt(["run", "--exclude", "never_selected"])
-    assert len(results) == 10
+    assert len(results) == 12
 
     test_args = ["test"]
     if include:

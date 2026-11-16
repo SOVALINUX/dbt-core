@@ -1,12 +1,17 @@
-import dbt.exceptions
 from typing import Any, Dict, Optional
+
 import yaml
+
+import dbt_common.exceptions
+import dbt_common.exceptions.base
 
 # the C version is faster, but it doesn't always exist
 try:
-    from yaml import CLoader as Loader, CSafeLoader as SafeLoader, CDumper as Dumper
+    from yaml import CDumper as Dumper
+    from yaml import CLoader as Loader
+    from yaml import CSafeLoader as SafeLoader
 except ImportError:
-    from yaml import Loader, SafeLoader, Dumper  # type: ignore  # noqa: F401
+    from yaml import Dumper, Loader, SafeLoader  # type: ignore  # noqa: F401
 
 
 YAML_ERROR_MESSAGE = """
@@ -51,13 +56,13 @@ def safe_load(contents) -> Optional[Dict[str, Any]]:
     return yaml.load(contents, Loader=SafeLoader)
 
 
-def load_yaml_text(contents, path=None):
+def load_yaml_text(contents, path=None, loader=SafeLoader) -> Optional[Dict[str, Any]]:
     try:
-        return safe_load(contents)
+        return yaml.load(contents, loader)
     except (yaml.scanner.ScannerError, yaml.YAMLError) as e:
         if hasattr(e, "problem_mark"):
             error = contextualized_yaml_error(contents, e)
         else:
             error = str(e)
 
-        raise dbt.exceptions.ValidationException(error)
+        raise dbt_common.exceptions.base.DbtValidationError(error)

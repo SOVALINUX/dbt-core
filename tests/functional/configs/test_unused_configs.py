@@ -1,7 +1,7 @@
 import pytest
 
+from dbt.exceptions import CompilationError
 from dbt.tests.util import run_dbt
-from dbt.exceptions import CompilationException
 
 seeds__seed_csv = """id,value
 4,2
@@ -30,7 +30,7 @@ class TestUnusedModelConfigs:
                     "enabled": True,
                 }
             },
-            "tests": {
+            "data_tests": {
                 "test": {
                     "enabled": True,
                 }
@@ -41,7 +41,7 @@ class TestUnusedModelConfigs:
         self,
         project,
     ):
-        with pytest.raises(CompilationException) as excinfo:
+        with pytest.raises(CompilationError) as excinfo:
             run_dbt(["--warn-error", "seed"])
 
         assert "Configuration paths exist" in str(excinfo.value)

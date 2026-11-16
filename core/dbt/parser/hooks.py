@@ -1,14 +1,14 @@
 from dataclasses import dataclass
-from typing import Iterable, Iterator, Union, List, Tuple
+from typing import Iterable, Iterator, List, Tuple, Union
 
 from dbt.context.context_config import ContextConfig
 from dbt.contracts.files import FilePath
-from dbt.contracts.graph.parsed import ParsedHookNode
-from dbt.exceptions import InternalException
+from dbt.contracts.graph.nodes import HookNode
 from dbt.node_types import NodeType, RunHookType
 from dbt.parser.base import SimpleParser
 from dbt.parser.search import FileBlock
 from dbt.utils import get_pseudo_hook_path
+from dbt_common.exceptions import DbtInternalError
 
 
 @dataclass
@@ -46,7 +46,7 @@ class HookSearcher(Iterable[HookBlock]):
         elif self.hook_type == RunHookType.End:
             hooks = self.project.on_run_end
         else:
-            raise InternalException(
+            raise DbtInternalError(
                 'hook_type must be one of "{}" or "{}" (got {})'.format(
                     RunHookType.Start, RunHookType.End, self.hook_type
                 )
@@ -65,9 +65,7 @@ class HookSearcher(Iterable[HookBlock]):
             )
 
 
-class HookParser(SimpleParser[HookBlock, ParsedHookNode]):
-    def transform(self, node):
-        return node
+class HookParser(SimpleParser[HookBlock, HookNode]):
 
     # Hooks are only in the dbt_project.yml file for the project
     def get_path(self) -> FilePath:
@@ -81,10 +79,10 @@ class HookParser(SimpleParser[HookBlock, ParsedHookNode]):
         )
         return path
 
-    def parse_from_dict(self, dct, validate=True) -> ParsedHookNode:
+    def parse_from_dict(self, dct, validate=True) -> HookNode:
         if validate:
-            ParsedHookNode.validate(dct)
-        return ParsedHookNode.from_dict(dct)
+            HookNode.validate(dct)
+        return HookNode.from_dict(dct)
 
     @classmethod
     def get_compiled_path(cls, block: HookBlock):
@@ -98,7 +96,7 @@ class HookParser(SimpleParser[HookBlock, ParsedHookNode]):
         fqn: List[str],
         name=None,
         **kwargs,
-    ) -> ParsedHookNode:
+    ) -> HookNode:
 
         return super()._create_parsetime_node(
             block=block,

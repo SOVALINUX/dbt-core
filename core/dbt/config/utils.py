@@ -1,75 +1,118 @@
-from argparse import Namespace
-from typing import Any, Dict, Optional, Union
-from xmlrpc.client import Boolean
-from dbt.contracts.project import UserConfig
+from typing import Any, Dict, Optional, Set, Tuple
 
-import dbt.flags as flags
+from dbt import deprecations
 from dbt.clients import yaml_helper
-from dbt.config import Profile, Project, read_user_config
-from dbt.config.renderer import DbtProjectYamlRenderer, ProfileRenderer
-from dbt.events.functions import fire_event
-from dbt.events.types import InvalidVarsYAML
-from dbt.exceptions import ValidationException, raise_compiler_error
+from dbt.events.fusion_warn_error_options import FUSION_WARN_ERROR_OPTION_NAMES
+from dbt.events.types import InvalidOptionYAML
+from dbt.exceptions import DbtExclusivePropertyUseError, OptionNotYamlDictError
+from dbt_common.events.functions import fire_event
+from dbt_common.events.types import Note
+from dbt_common.exceptions import DbtValidationError
+from dbt_common.helper_types import WarnErrorOptionsV2
 
 
 def parse_cli_vars(var_string: str) -> Dict[str, Any]:
+    return parse_cli_yaml_string(var_string, "vars")
+
+
+def parse_cli_yaml_string(var_string: str, cli_option_name: str) -> Dict[str, Any]:
     try:
         cli_vars = yaml_helper.load_yaml_text(var_string)
         var_type = type(cli_vars)
-        if var_type is dict:
+        if cli_vars is not None and var_type is dict:
             return cli_vars
         else:
-            type_name = var_type.__name__
-            raise_compiler_error(
-                "The --vars argument must be a YAML dictionary, but was "
-                "of type '{}'".format(type_name)
-            )
-    except ValidationException:
-        fire_event(InvalidVarsYAML())
+            raise OptionNotYamlDictError(var_type, cli_option_name)
+    except (DbtValidationError, OptionNotYamlDictError):
+        fire_event(InvalidOptionYAML(option_name=cli_option_name))
         raise
 
 
-def get_project_config(
-    project_path: str,
-    profile_name: str,
-    args: Namespace = Namespace(),
-    cli_vars: Optional[Dict[str, Any]] = None,
-    profile: Optional[Profile] = None,
-    user_config: Optional[UserConfig] = None,
-    return_dict: Boolean = True,
-) -> Union[Project, Dict]:
-    """Returns a project config (dict or object) from a given project path and profile name.
+def exclusive_primary_alt_value_setting(
+    dictionary: Optional[Dict[str, Any]],
+    primary: str,
+    alt: str,
+    parent_config: Optional[str] = None,
+) -> None:
+    """Munges in place under the primary the options for the primary and alt values
 
-    Args:
-        project_path: Path to project
-        profile_name: Name of profile
-        args: An argparse.Namespace that represents what would have been passed in on the
-            command line (optional)
-        cli_vars: A dict of any vars that would have been passed in on the command line (optional)
-            (see parse_cli_vars above for formatting details)
-        profile: A dbt.config.profile.Profile object (optional)
-        user_config: A dbt.contracts.project.UserConfig object (optional)
-        return_dict: Return a dict if true, return the full dbt.config.project.Project object if false
-
-    Returns:
-        A full project config
-
+    Sometimes we allow setting something via TWO keys, but not at the same time. If both the primary
+    key and alt key have values, an error gets raised. If the alt key has values, then we update
+    the dictionary to ensure the primary key contains the values. If neither are set, nothing happens.
     """
-    # Generate a profile if not provided
-    if profile is None:
-        # Generate user_config if not provided
-        if user_config is None:
-            user_config = read_user_config(flags.PROFILES_DIR)
-        # Update flags
-        flags.set_from_args(args, user_config)
-        if cli_vars is None:
-            cli_vars = {}
-        profile = Profile.render_from_args(args, ProfileRenderer(cli_vars), profile_name)
-    # Generate a project
-    project = Project.from_project_root(
-        project_path,
-        DbtProjectYamlRenderer(profile),
-        verify_version=bool(flags.VERSION_CHECK),
+
+    if dictionary is None:
+        return
+
+    primary_options = dictionary.get(primary)
+    alt_options = dictionary.get(alt)
+
+    if primary_options and alt_options:
+        where = f" in `{parent_config}`" if parent_config is not None else ""
+        raise DbtExclusivePropertyUseError(
+            f"Only `{alt}` or `{primary}` can be specified{where}, not both"
+        )
+
+    if alt in dictionary:
+        alt_value = dictionary.pop(alt)
+        dictionary[primary] = alt_value
+
+
+def normalize_warn_error_options(warn_error_options: Dict[str, Any]) -> None:
+    has_include = "include" in warn_error_options
+    has_exclude = "exclude" in warn_error_options
+
+    if has_include or has_exclude:
+        deprecations.buffer(
+            "weo-include-exclude-deprecation",
+            found_include=has_include,
+            found_exclude=has_exclude,
+        )
+
+    exclusive_primary_alt_value_setting(
+        warn_error_options, "error", "include", "warn_error_options"
     )
-    # Return
-    return project.to_project_config() if return_dict else project
+    exclusive_primary_alt_value_setting(
+        warn_error_options, "warn", "exclude", "warn_error_options"
+    )
+    for key in ("error", "warn", "silence"):
+        if key in warn_error_options and warn_error_options[key] is None:
+            warn_error_options[key] = []
+
+
+def partition_warn_error_options(
+    warn_error_options: Dict[str, Any], valid_error_names: Set[str]
+) -> Tuple[Set[str], Dict[str, Any]]:
+
+    fusion_only_vocab = FUSION_WARN_ERROR_OPTION_NAMES - valid_error_names
+
+    def is_fusion_only(name: Any) -> bool:
+        return isinstance(name, str) and name in fusion_only_vocab
+
+    fusion_only_names: Set[str] = set()
+    core_fusion_warn_error_options = dict(warn_error_options)
+    for key in ("error", "warn", "silence"):
+        names = warn_error_options.get(key)
+        if isinstance(names, list):
+            fusion_only_names.update(filter(is_fusion_only, names))
+            core_fusion_warn_error_options[key] = [n for n in names if not is_fusion_only(n)]
+    return fusion_only_names, core_fusion_warn_error_options
+
+
+def build_warn_error_options_v2(
+    warn_error_options: Dict[str, Any], valid_error_names: Set[str]
+) -> WarnErrorOptionsV2:
+    fusion_only_names, core_fusion_warn_error_options = partition_warn_error_options(
+        warn_error_options, valid_error_names
+    )
+    for name in sorted(fusion_only_names):
+        fire_event(
+            Note(msg=f"{name} is not being used because it's specific to the dbt Fusion engine.")
+        )
+
+    return WarnErrorOptionsV2(
+        error=core_fusion_warn_error_options.get("error", []),
+        warn=core_fusion_warn_error_options.get("warn", []),
+        silence=core_fusion_warn_error_options.get("silence", []),
+        valid_error_names=valid_error_names,
+    )

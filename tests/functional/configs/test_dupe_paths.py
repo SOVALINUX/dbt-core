@@ -2,7 +2,6 @@ import pytest
 
 from dbt.tests.util import run_dbt
 
-
 my_model_sql = """
 select 1 as fun
 """
@@ -41,6 +40,30 @@ class TestDupeProjectPaths:
     def project_config_update(self):
         return {
             "model-paths": ["models"],
+            "seed-paths": ["models"],
+        }
+
+    def test_config_with_dupe_paths(self, project, dbt_project_yml):
+        results = run_dbt(["seed"])
+        assert len(results) == 1
+        results = run_dbt(["run"])
+        assert len(results) == 1
+
+
+class TestDupeStrippedProjectPaths:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "my_model.sql": my_model_sql,
+            "seed.csv": seed_csv,
+            "somedoc.md": somedoc_md,
+            "schema.yml": schema_yml,
+        }
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "model-paths": ["models/"],
             "seed-paths": ["models"],
         }
 

@@ -1,12 +1,47 @@
 import os
 from dataclasses import dataclass
-from typing import List, Callable, Iterable, Set, Union, Iterator, TypeVar, Generic
+from typing import (
+    Callable,
+    Generic,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Set,
+    TypeVar,
+    Union,
+)
 
-from dbt.clients.jinja import extract_toplevel_blocks, BlockTag
-from dbt.clients.system import find_matching
+from pathspec import PathSpec  # type: ignore
+
+from dbt import deprecations
 from dbt.config import Project
-from dbt.contracts.files import FilePath, AnySourceFile
-from dbt.exceptions import ParsingException, InternalException
+from dbt.contracts.files import AnySourceFile, FilePath
+from dbt.exceptions import DbtInternalError, ParsingError
+from dbt.flags import get_flags
+from dbt_common.clients._jinja_blocks import ExtractWarning
+from dbt_common.clients.jinja import BlockTag, extract_toplevel_blocks
+from dbt_common.clients.system import find_matching
+
+JINJA_FILE_EXTENSIONS = (
+    ".j2",
+    ".jinja2",
+    ".jinja",
+)
+
+
+def _get_node_name_from_relative_path(relative_path: str) -> str:
+    """Return the base name for a node from a relative file path.
+
+    Strips the full extension (e.g. .sql.j2 or .md) so that node names are
+    consistent whether the file is model.sql or model.sql.j2.
+    """
+    base = os.path.basename(relative_path)
+    for ext in JINJA_FILE_EXTENSIONS:
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+    name, _ = os.path.splitext(base)
+    return name
 
 
 # What's the point of wrapping a SourceFile with this class?
@@ -17,6 +52,9 @@ class FileBlock:
 
     @property
     def name(self):
+        if getattr(get_flags(), "ALLOW_JINJA_FILE_EXTENSIONS", False):
+            return _get_node_name_from_relative_path(self.file.path.relative_path)
+
         base = os.path.basename(self.file.path.relative_path)
         name, _ = os.path.splitext(base)
         return name
@@ -61,13 +99,18 @@ class FullBlock(FileBlock):
         return self.block.full_block
 
 
-def filesystem_search(project: Project, relative_dirs: List[str], extension: str):
+def filesystem_search(
+    project: Project,
+    relative_dirs: List[str],
+    extension: str,
+    ignore_spec: Optional[PathSpec] = None,
+):
     ext = "[!.#~]*" + extension
     root = project.project_root
     file_path_list = []
-    for result in find_matching(root, relative_dirs, ext):
+    for result in find_matching(root, relative_dirs, ext, ignore_spec):
         if "searched_path" not in result or "relative_path" not in result:
-            raise InternalException("Invalid result from find_matching: {}".format(result))
+            raise DbtInternalError("Invalid result from find_matching: {}".format(result))
         file_match = FilePath(
             searched_path=result["searched_path"],
             relative_path=result["relative_path"],
@@ -92,25 +135,37 @@ class BlockSearcher(Generic[BlockSearchResult], Iterable[BlockSearchResult]):
         source: List[FileBlock],
         allowed_blocks: Set[str],
         source_tag_factory: BlockSearchResultFactory,
+        check_jinja: bool = True,
     ) -> None:
         self.source = source
         self.allowed_blocks = allowed_blocks
         self.source_tag_factory: BlockSearchResultFactory = source_tag_factory
+        self.check_jinja = check_jinja
 
     def extract_blocks(self, source_file: FileBlock) -> Iterable[BlockTag]:
+        # This is a bit of a hack to get the file path to the deprecation
+        def wrap_handle_extract_warning(warning: ExtractWarning) -> None:
+            self._handle_extract_warning(warning=warning, file=source_file.path.relative_path)
+
         try:
             blocks = extract_toplevel_blocks(
-                source_file.contents, allowed_blocks=self.allowed_blocks, collect_raw_data=False
+                source_file.contents,
+                allowed_blocks=self.allowed_blocks,
+                collect_raw_data=False,
+                warning_callback=wrap_handle_extract_warning if self.check_jinja else None,
             )
             # this makes mypy happy, and this is an invariant we really need
             for block in blocks:
                 assert isinstance(block, BlockTag)
                 yield block
 
-        except ParsingException as exc:
+        except ParsingError as exc:
             if exc.node is None:
                 exc.add_node(source_file)
             raise
+
+    def _handle_extract_warning(self, warning: ExtractWarning, file: str) -> None:
+        deprecations.warn("unexpected-jinja-block-deprecation", msg=warning.msg, file=file)
 
     def __iter__(self) -> Iterator[BlockSearchResult]:
         for entry in self.source:
